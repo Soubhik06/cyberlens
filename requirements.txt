@@ -1,0 +1,16 @@
+streamlit==1.52.2
+chromadb==0.5.0
+sentence-transformers==3.0.1
+google-genai
+pandas==2.3.3
+openpyxl==3.1.5
+plotly==6.5.2
+python-dotenv==1.2.1
+torch==2.3.1+cpu
+numpy==2.4.0
+tqdm==4.67.1
+groq==1.4.0
+fastapi
+uvicorn
+pyngrok
+psutil

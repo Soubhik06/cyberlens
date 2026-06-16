@@ -1,0 +1,507 @@
+{% extends 'base.html' %}
+
+{% block head %}
+<style>
+    .section-title {
+        color: #58a6ff;
+        border-bottom: 2px solid #30363d;
+        padding-bottom: 0.5rem;
+        margin-bottom: 1.5rem;
+        font-weight: 700;
+    }
+    .panel-card {
+        margin-bottom: 2rem;
+    }
+    
+    /* Panel 1 Table Styles */
+    .table-gioia {
+        border-collapse: separate;
+        border-spacing: 0;
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #30363d;
+    }
+    .table-gioia th {
+        background-color: #161b22 !important;
+        color: #8b949e !important;
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 0.8rem;
+        letter-spacing: 0.5px;
+        padding: 12px 16px;
+        border-bottom: 1px solid #30363d;
+    }
+    .table-gioia td {
+        padding: 14px 16px;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        vertical-align: top;
+        border-bottom: 1px solid #30363d;
+    }
+    .table-gioia tr:last-child td {
+        border-bottom: none;
+    }
+    
+    /* Column Color Coding (Accessible light backgrounds with dark text) */
+    .col-first-order {
+        background-color: #e6f2ff !important;
+        color: #0d233a !important;
+        font-weight: 500;
+        border-right: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    .col-second-theme {
+        background-color: #fff0e6 !important;
+        color: #5a2e05 !important;
+        font-weight: 500;
+        border-right: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    .col-aggregate-dim {
+        background-color: #e6f9ec !important;
+        color: #0f361c !important;
+        font-weight: 600;
+    }
+    
+    /* Panel 2 Card Layout */
+    .title-large {
+        font-size: 1.8rem;
+        font-weight: 800;
+        color: #ff7b72;
+        line-height: 1.3;
+    }
+    .contribution-statement {
+        font-style: italic;
+        color: #8b949e;
+        border-left: 3px solid #bc8cff;
+        padding-left: 1rem;
+        margin: 1.2rem 0;
+    }
+    .dim-card {
+        background-color: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 1.2rem;
+        height: 100%;
+        transition: transform 0.2s, border-color 0.2s;
+    }
+    .dim-card:hover {
+        transform: translateY(-2px);
+        border-color: #58a6ff;
+    }
+    .dim-name {
+        color: #58a6ff;
+        font-weight: 700;
+        font-size: 1.1rem;
+        margin-bottom: 0.6rem;
+    }
+    
+    /* Panel 3 Clipboard Styles */
+    .narrative-box {
+        background-color: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 1.2rem;
+        font-family: 'Times New Roman', Times, serif;
+        font-size: 1.05rem;
+        line-height: 1.7;
+        color: #d1d5db;
+        max-height: 250px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+    }
+    .copy-btn {
+        background-color: #21262d;
+        border: 1px solid #30363d;
+        color: #c9d1d9;
+        font-size: 0.8rem;
+        font-weight: 500;
+        padding: 6px 12px;
+        border-radius: 6px;
+        transition: background-color 0.2s;
+    }
+    .copy-btn:hover {
+        background-color: #30363d;
+        color: #58a6ff;
+    }
+    
+    /* Panel 4 Stats Grid */
+    .stat-box {
+        background-color: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 1rem;
+        text-align: center;
+    }
+    .stat-number {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #58a6ff;
+        font-family: monospace;
+    }
+    .stat-label {
+        font-size: 0.75rem;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-top: 4px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-11">
+        
+        {% if not pipeline_run %}
+        <div class="card p-5 text-center my-5 shadow">
+            <div class="card-body">
+                <div class="mb-4">
+                    <span style="font-size: 3rem;">📊</span>
+                </div>
+                <h3 class="text-danger">Pipeline Not Executed</h3>
+                <p class="text-muted mx-auto mt-2" style="max-width: 500px;">
+                    Pipeline has not been run yet. Run <code>gioia_pipeline.py</code> first, then refresh this page.
+                </p>
+                <div class="mt-4">
+                    <a href="/gioia" class="btn btn-gradient px-4 py-2">Refresh Page</a>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        
+        <div class="mb-4">
+            <h2 class="section-title">Gioia Qualitative Data Analysis</h2>
+        </div>
+
+        <!-- Panel 1: Visual Coding Structure -->
+        <div class="card panel-card">
+            <div class="card-header p-3">
+                <h5 class="mb-0 text-primary">Panel 1 — Visual Data Coding Structure</h5>
+            </div>
+            <div class="card-body p-4">
+                <div class="table-responsive">
+                    <table class="table table-gioia">
+                        <thead>
+                            <tr>
+                                <th style="width: 35%;">First-Order Codes</th>
+                                <th style="width: 35%;">Second-Order Themes</th>
+                                <th style="width: 30%;">Aggregate Dimensions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% if table_rows %}
+                                {% for row in table_rows %}
+                                <tr>
+                                    <td class="col-first-order">{{ row[0] }}</td>
+                                    <td class="col-second-theme">{{ row[1] }}</td>
+                                    <td class="col-aggregate-dim">{{ row[2] }}</td>
+                                </tr>
+                                {% endfor %}
+                            {% else %}
+                                <tr>
+                                    <td colspan="3" class="text-center text-muted">No data structure rows loaded.</td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 2: Theoretical Contribution Framework -->
+        <div class="card panel-card">
+            <div class="card-header p-3">
+                <h5 class="mb-0 text-primary">Panel 2 — Theoretical Contribution Framework</h5>
+            </div>
+            <div class="card-body p-4">
+                {% if dimensions_data %}
+                    <div class="mb-4 border-bottom border-secondary pb-3">
+                        <div class="text-xs text-muted uppercase font-weight-bold mb-1">Proposed Research Title</div>
+                        <div class="title-large">{{ dimensions_data.get('proposed_title', 'Theoretical Framework on UPI Fraud') }}</div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <div class="text-xs text-muted uppercase font-weight-bold mb-1">Theoretical Contribution Statement</div>
+                        <div class="contribution-statement">
+                            "{{ dimensions_data.get('theoretical_contribution', 'No contribution statement provided.') }}"
+                        </div>
+                    </div>
+
+                    <div class="text-xs text-muted uppercase font-weight-bold mb-3">Theoretical Mechanism & Dimensions</div>
+                    <div class="row g-3">
+                        {% for dim in dimensions_data.get('aggregate_dimensions', []) %}
+                        <div class="col-md-4">
+                            <div class="dim-card">
+                                <div class="dim-name">{{ dim.get('dimension_name') }}</div>
+                                <div class="small mb-3">
+                                    <span class="text-muted">Concept:</span> <span class="text-light">{{ dim.get('theoretical_concept') }}</span>
+                                </div>
+                                <div class="small">
+                                    <span class="text-muted">Implication:</span> <span class="text-light">{{ dim.get('theoretical_implication') }}</span>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mt-4 pt-3 border-top border-secondary">
+                        <div class="text-xs text-muted uppercase font-weight-bold mb-1">Theoretical Mechanism</div>
+                        <p class="small text-light mt-1 mb-0">{{ dimensions_data.get('theoretical_mechanism', '') }}</p>
+                    </div>
+                {% else %}
+                    <p class="text-muted text-center mb-0">No theoretical framework JSON data found.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Panel 3: Methods and Findings Texts -->
+        <div class="card panel-card">
+            <div class="card-header p-3">
+                <h5 class="mb-0 text-primary">Panel 3 — Methods & Findings Narrative Drafts</h5>
+            </div>
+            <div class="card-body p-4">
+                <div class="row">
+                    <!-- Methods Column -->
+                    <div class="col-md-6 mb-4 mb-md-0">
+                        <div class="d-flex justify-between align-items-center mb-2">
+                            <h6 class="mb-0 text-info font-weight-bold">Methods Section (Qualitative Coding Procedure)</h6>
+                            <button class="copy-btn btn" onclick="copyText('methodsPara', 'Methods')">Copy</button>
+                        </div>
+                        <div class="narrative-box" id="methodsPara">{{ methods_text }}</div>
+                    </div>
+                    
+                    <!-- Findings Column -->
+                    <div class="col-md-6">
+                        <div class="d-flex justify-between align-items-center mb-2">
+                            <h6 class="mb-0 text-info font-weight-bold">Findings Narrative (Organized by Dimensions)</h6>
+                            <button class="copy-btn btn" onclick="copyText('findingsSec', 'Findings')">Copy</button>
+                        </div>
+                        <div class="narrative-box" id="findingsSec">{{ findings_text }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 4: Pipeline Statistics -->
+        <div class="card panel-card">
+            <div class="card-header p-3">
+                <h5 class="mb-0 text-primary">Panel 4 — Pipeline Run Statistics</h5>
+            </div>
+            <div class="card-body p-4">
+                <div class="row g-3">
+                    <div class="col-6 col-md-2-4 col-lg">
+                        <div class="stat-box">
+                            <div class="stat-number">{{ stats.get('total_records', 'N/A') }}</div>
+                            <div class="stat-label">Records Ingested</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2-4 col-lg">
+                        <div class="stat-box">
+                            <div class="stat-number">{{ stats.get('relevant_chunks', 'N/A') }}</div>
+                            <div class="stat-label">Relevant Chunks</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2-4 col-lg">
+                        <div class="stat-box">
+                            <div class="stat-number">{{ stats.get('first_order_codes_count', 'N/A') }}</div>
+                            <div class="stat-label">First-Order Codes</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2-4 col-lg">
+                        <div class="stat-box">
+                            <div class="stat-number">{{ stats.get('second_order_themes_count', 'N/A') }}</div>
+                            <div class="stat-label">Second-Order Themes</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2-4 col-lg">
+                        <div class="stat-box">
+                            <div class="stat-number">{{ stats.get('aggregate_dimensions_count', 'N/A') }}</div>
+                            <div class="stat-label">Aggregate Dimensions</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 5: Query Gioia Agent -->
+        <div class="card panel-card">
+            <div class="card-header p-3">
+                <h5 class="mb-0 text-primary">Panel 5 — Query Gioia Agent</h5>
+            </div>
+            <div class="card-body p-4">
+                <div class="mb-3">
+                    <label for="gioiaQuestion" class="form-label font-weight-bold">Ask a question about the qualitative findings, methods, or dimensions:</label>
+                    <textarea class="form-control bg-dark text-light border-secondary" id="gioiaQuestion" rows="3" placeholder="e.g. How does Deceptive Interactions explain UPI fraud? Or what are the enablers?"></textarea>
+                </div>
+                <button class="btn btn-gradient px-4" id="askAgentBtn" onclick="askGioiaAgent()">Ask Agent</button>
+                
+                <div id="agentResponseContainer" class="mt-4 d-none">
+                    <!-- Workflow Trace Accordion -->
+                    <h6 class="text-info font-weight-bold mb-3">Qualitative Research Reasoning Trace:</h6>
+                    
+                    <div class="accordion mb-4" id="workflowAccordion">
+                        <!-- Step 1: First-Order Grounding -->
+                        <div class="accordion-item bg-dark border-secondary">
+                            <h2 class="accordion-header" id="headingOne">
+                                <button class="accordion-button collapsed bg-dark text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="false" aria-controls="collapseOne">
+                                    <span class="badge bg-primary me-2">Step 1</span> First-Order Qualitative Coding Grounding
+                                </button>
+                            </h2>
+                            <div id="collapseOne" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#workflowAccordion">
+                                <div class="accordion-body text-light">
+                                    <p class="small text-muted mb-3">The agent selected the following grounded informant codes and quotes matching your question:</p>
+                                    <div id="step1CodesList"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Step 2: Second-Order Conceptualization -->
+                        <div class="accordion-item bg-dark border-secondary">
+                            <h2 class="accordion-header" id="headingTwo">
+                                <button class="accordion-button collapsed bg-dark text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapseTwo" aria-expanded="false" aria-controls="collapseTwo">
+                                    <span class="badge bg-warning text-dark me-2">Step 2</span> Second-Order Theme Conceptualization
+                                </button>
+                            </h2>
+                            <div id="collapseTwo" class="accordion-collapse collapse" aria-labelledby="headingTwo" data-bs-parent="#workflowAccordion">
+                                <div class="accordion-body text-light">
+                                    <p class="small text-muted mb-3">The agent mapped the selected codes to these abstract conceptual themes:</p>
+                                    <div id="step2ThemesList"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Step 3: Theoretical Abstraction -->
+                        <div class="accordion-item bg-dark border-secondary">
+                            <h2 class="accordion-header" id="headingThree">
+                                <button class="accordion-button collapsed bg-dark text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapseThree" aria-expanded="false" aria-controls="collapseThree">
+                                    <span class="badge bg-success me-2">Step 3</span> Aggregate Theoretical Dimensions
+                                </button>
+                            </h2>
+                            <div id="collapseThree" class="accordion-collapse collapse" aria-labelledby="headingThree" data-bs-parent="#workflowAccordion">
+                                <div class="accordion-body text-light">
+                                    <p class="small text-muted mb-3">The themes map to the core theoretical dimensions explaining the phenomenon:</p>
+                                    <div id="step3DimsList"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <h6 class="text-info font-weight-bold mb-2">Synthesized Academic Answer:</h6>
+                    <div id="agentResponseText" class="narrative-box" style="font-family: inherit; font-size: 0.95rem; max-height: 500px;"></div>
+                </div>
+            </div>
+        </div>
+
+        {% endif %}
+        
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+    .accordion-button:not(.collapsed) {
+        background-color: #21262d !important;
+        color: #58a6ff !important;
+        box-shadow: none !important;
+    }
+    .accordion-button:focus {
+        box-shadow: none !important;
+    }
+</style>
+<script>
+    function copyText(elementId, label) {
+        const text = document.getElementById(elementId).innerText;
+        navigator.clipboard.writeText(text).then(() => {
+            alert(`${label} narrative text copied to clipboard successfully!`);
+        }).catch(err => {
+            console.error('Failed to copy text: ', err);
+        });
+    }
+
+    function askGioiaAgent() {
+        const question = document.getElementById('gioiaQuestion').value.trim();
+        if (!question) {
+            alert('Please enter a question.');
+            return;
+        }
+        
+        const btn = document.getElementById('askAgentBtn');
+        const container = document.getElementById('agentResponseContainer');
+        const responseText = document.getElementById('agentResponseText');
+        
+        // Show loading state
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Thinking...';
+        container.classList.remove('d-none');
+        responseText.innerHTML = '<span class="text-muted">Agent is generating response and tracing reasoning workflow... Please wait.</span>';
+        
+        // Clear previous steps
+        document.getElementById('step1CodesList').innerHTML = '';
+        document.getElementById('step2ThemesList').innerHTML = '';
+        document.getElementById('step3DimsList').innerHTML = '';
+        
+        fetch('/query-gioia', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ question: question })
+        })
+        .then(res => res.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = 'Ask Agent';
+            if (data.success) {
+                // Populate Step 1: Codes
+                let codesHtml = '';
+                data.workflow.retrieved_codes.forEach(c => {
+                    codesHtml += `
+                        <div class="mb-3 border-bottom border-secondary pb-2">
+                            <div class="font-weight-bold text-info small">Code: "${c.code}"</div>
+                            <div class="font-italic text-light small mt-1">"${c.quote}"</div>
+                            <div class="text-muted text-xs mt-1">(Source: ${c.source}, Date: ${c.date})</div>
+                        </div>
+                    `;
+                });
+                document.getElementById('step1CodesList').innerHTML = codesHtml || '<p class="text-muted">No matching codes retrieved.</p>';
+                
+                // Populate Step 2: Themes
+                let themesHtml = '';
+                data.workflow.mapped_themes.forEach(t => {
+                    themesHtml += `
+                        <div class="mb-2">
+                            <div class="font-weight-bold text-warning small">${t.name}</div>
+                            <div class="text-light small">${t.description}</div>
+                        </div>
+                    `;
+                });
+                document.getElementById('step2ThemesList').innerHTML = themesHtml || '<p class="text-muted">No themes mapped.</p>';
+                
+                // Populate Step 3: Dimensions
+                let dimsHtml = '';
+                data.workflow.mapped_dimensions.forEach(d => {
+                    dimsHtml += `
+                        <div class="mb-2">
+                            <div class="font-weight-bold text-success small">${d.dimension_name}</div>
+                            <div class="text-light small"><span class="text-muted">Concept:</span> ${d.theoretical_concept}</div>
+                            <div class="text-light mt-1 small"><span class="text-muted">Implication:</span> ${d.theoretical_implication}</div>
+                        </div>
+                    `;
+                });
+                document.getElementById('step3DimsList').innerHTML = dimsHtml || '<p class="text-muted">No dimensions mapped.</p>';
+                
+                // Populate final synthesized answer
+                responseText.innerText = data.answer;
+            } else {
+                responseText.innerHTML = `<span class="text-danger">Error: ${data.error}</span>`;
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerHTML = 'Ask Agent';
+            responseText.innerHTML = `<span class="text-danger">Failed to connect to agent: ${err}</span>`;
+        });
+    }
+</script>
+{% endblock %}
