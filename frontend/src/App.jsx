@@ -89,6 +89,15 @@ export default function App() {
 
       {/* Main Panel Viewport */}
       <main className="flex-1 h-screen overflow-hidden relative">
+        {currentPage === "chat" && (
+          <Chat
+            cats={cats}
+            platforms={platforms}
+            narrativeTypes={narrativeTypes}
+            startYear={stats.date_range?.start_year}
+            endYear={stats.date_range?.end_year}
+          />
+        )}
         {currentPage === "submit" && (
           <Submit
             cats={cats}
@@ -100,7 +109,14 @@ export default function App() {
             cats={cats}
           />
         )}
+        {currentPage === "insights" && (
+          <Insights
+            allDocs={allDocs}
+            stats={stats}
+          />
+        )}
       </main>
+
     </div>
   );
 }

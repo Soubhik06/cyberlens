@@ -8,10 +8,16 @@ import random
 import argparse
 import requests
 import pandas as pd
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dotenv import load_dotenv
 
-# ==========================================
+load_dotenv()
+
+# CONCURRENCY SWITCH: Set to 1 for Free Tier (sequential batching), >1 for Paid Tier (parallel API calls)
+CONCURRENCY_LIMIT = 1
+
 # CONSTANTS AT TOP OF FILE
-# ==========================================
 EXCEL_PATH = "data/all_data.xlsx"
 TXT_FOLDER = "data/txt"
 OUTPUT_FOLDER = "gioia_output"
@@ -24,9 +30,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 MODEL_FAST = "llama-3.1-8b-instant"     # agents 2,3
 MODEL_SMART = "llama-3.3-70b-versatile" # agents 4,5,6
 
-# ==========================================
 # CATEGORY DETECTOR & NORMALIZERS
-# ==========================================
 
 CATEGORY_MAP = {
     'upi': 'UPI and Digital Payment Fraud',
@@ -100,9 +104,7 @@ def generate_run_id(research_question):
     slug = slug[:50]
     return f"{timestamp}_{slug}"
 
-# ==========================================
 # GROQ API AND JSON EXTRACTORS
-# ==========================================
 
 # API Key list initialization for dynamic rotation
 def load_groq_api_keys():
@@ -143,39 +145,60 @@ def rotate_api_key():
     else:
         print("[API KEY ROTATION] Only one API key available. Cannot rotate.")
 
-def call_groq(system_prompt, user_message, model, max_tokens=2000):
+def call_groq(system_prompt, user_message, model, max_tokens=2000, progress_callback=None):
     url = "https://api.groq.com/openai/v1/chat/completions"
-    current_key = get_current_api_key()
-    headers = {
-        "Authorization": f"Bearer {current_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ],
-        "temperature": 0.3,
-        "max_tokens": max_tokens
-    }
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
-        if r.status_code == 429:
-            print("[RATE LIMIT] Received 429. Rotating key and waiting 60 sec...")
-            rotate_api_key()
-            time.sleep(60)
-            
-            # retry with newly rotated key
-            new_key = get_current_api_key()
-            headers["Authorization"] = f"Bearer {new_key}"
+    
+    attempt = 0
+    max_attempts = 6
+    backoff = 4.0
+    
+    while attempt < max_attempts:
+        current_key = get_current_api_key()
+        headers = {
+            "Authorization": f"Bearer {current_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            "temperature": 0.3,
+            "max_tokens": max_tokens
+        }
+        try:
             r = requests.post(url, headers=headers, json=payload, timeout=60)
+            if r.status_code == 429:
+                delay = backoff + random.uniform(0.1, 1.0)
+                print(f"[RATE LIMIT 429] Attempt {attempt+1}/{max_attempts} failed with 429. Rotating key and waiting {delay:.2f} seconds...")
+                rotate_api_key()
+                if progress_callback:
+                    try:
+                        progress_callback(is_waiting=True, est_time_remaining_add=delay)
+                    except Exception as cb_err:
+                        print(f"Error in progress callback: {cb_err}")
+                time.sleep(delay)
+                if progress_callback:
+                    try:
+                        progress_callback(is_waiting=False)
+                    except Exception as cb_err:
+                        print(f"Error in progress callback: {cb_err}")
+                backoff = min(90.0, backoff * 2.0)
+                attempt += 1
+                continue
+                
+            if r.status_code != 200:
+                print(f"[API ERROR DETAILS] Status: {r.status_code}, Response: {r.text}")
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            print(f"[API ERROR] Attempt {attempt+1}/{max_attempts} failed: {e}")
+            delay = 2.0
+            time.sleep(delay)
+            attempt += 1
             
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        print(f"[API ERROR] {e}")
-        return None
+    return None
 
 def extract_json(text):
     if not text:
@@ -203,9 +226,7 @@ def extract_json(text):
         pass
     return None
 
-# ==========================================
 # STAGE 1: INTAKE AGENT (PURE PYTHON)
-# ==========================================
 
 def run_intake_agent(research_question):
     print("[AGENT 1] Initializing Intake Agent...")
@@ -419,13 +440,57 @@ def run_intake_agent(research_question):
     
     return final_records
 
-# ==========================================
 # STAGE 2: EXTRACTION AGENT
-# ==========================================
 
-def run_extraction_agent(chunks, research_question, detected_category, output_dir=None):
+def run_extraction_agent(chunks, research_question, detected_category, output_dir=None, progress_callback=None, concurrency_limit=1):
     print(f"[AGENT 2] Starting Extraction Agent. Screening {len(chunks)} chunks for relevance...")
-    system_prompt = f"""You are a research assistant screening text excerpts for a qualitative Gioia methodology study on {detected_category} in India (2014-2025).
+    
+    if concurrency_limit == 1:
+        batch_size = 5
+    else:
+        batch_size = 1
+        
+    total_records = len(chunks)
+    total_batches = (total_records + batch_size - 1) // batch_size
+    
+    if progress_callback:
+        progress_callback(processed=0, batch_idx=0)
+        
+    relevant_records = []
+    
+    system_prompt_batched = f"""You are a research assistant screening text excerpts for a qualitative Gioia methodology study on {detected_category} in India (2014-2025).
+
+Research Question: {research_question}
+
+A record is RELEVANT if it contains ANY of:
+- A specific {detected_category} incident or personal victim/near-miss experience
+- Description of fraud method or modus operandi related to {detected_category}
+- Victim emotions, psychological impact, or behavioral responses
+- Financial or personal consequences to victim
+- Institutional response (police, bank, court, RBI, NPCI) to {detected_category}
+- Near-miss: person recognized and avoided fraud
+
+A record is NOT RELEVANT if it is:
+- General news with no personal experience angle
+- About a completely different fraud type
+- Non-Indian context with no India relevance
+- Pure statistics with no narrative element
+- Duplicate of another record's content
+
+You will receive a JSON list of records to evaluate.
+For each record, evaluate its relevance.
+Respond with ONLY a JSON array of objects, each containing:
+- "id": (must match the input record id exactly)
+- "relevant": (boolean true/false)
+- "reason": (concise explanation, one sentence max)
+
+Format example:
+[
+  {{"id": "id1", "relevant": true, "reason": "describes personal UPI fraud experience"}},
+  {{"id": "id2", "relevant": false, "reason": "generic statistics without personal narrative"}}
+]"""
+
+    system_prompt_single = f"""You are a research assistant screening text excerpts for a qualitative Gioia methodology study on {detected_category} in India (2014-2025).
 
 Research Question: {research_question}
 
@@ -447,92 +512,124 @@ A record is NOT RELEVANT if it is:
 Respond with ONLY this JSON, nothing else:
 {{"relevant": true, "reason": "one sentence"}}"""
 
-    relevant_records = []
-    for idx, record in enumerate(chunks):
-        user_message = f"Record ID: {record['id']}\nText:\n{record['text']}"
-        res_text = call_groq(system_prompt, user_message, MODEL_FAST)
-        res_json = extract_json(res_text)
+    if concurrency_limit == 1:
+        # Serial Batched Processing with recursive split-on-failure fallback
+        def process_sub_batch(sub_chunks, attempt_depth=0):
+            if not sub_chunks:
+                return []
+            
+            batch_input = [{"id": r["id"], "text": r["text"]} for r in sub_chunks]
+            user_message = json.dumps(batch_input, indent=2)
+            
+            res_text = call_groq(system_prompt_batched, user_message, MODEL_FAST, progress_callback=progress_callback)
+            res_json = extract_json(res_text)
+            
+            # If batch failed (e.g. 413 token limit) and size > 1, split and recurse!
+            if res_json is None and len(sub_chunks) > 1 and attempt_depth < 3:
+                print(f"[BATCH FALLBACK] Batch of size {len(sub_chunks)} failed/too large. Splitting in half...")
+                mid = len(sub_chunks) // 2
+                left = process_sub_batch(sub_chunks[:mid], attempt_depth + 1)
+                right = process_sub_batch(sub_chunks[mid:], attempt_depth + 1)
+                return left + right
+                
+            results_list = []
+            res_map = {}
+            if isinstance(res_json, list):
+                for item in res_json:
+                    if isinstance(item, dict) and "id" in item:
+                        res_map[item["id"]] = item
+            
+            for r in sub_chunks:
+                r_id = r["id"]
+                decision = res_map.get(r_id, {})
+                is_relevant = decision.get("relevant", False)
+                reason = decision.get("reason", "No reason provided by model or parsing failed")
+                
+                if is_relevant:
+                    r_copy = r.copy()
+                    r_copy["relevance_reason"] = reason
+                    results_list.append(r_copy)
+            return results_list
+
+        for b_idx in range(total_batches):
+            start_idx = b_idx * batch_size
+            end_idx = min(start_idx + batch_size, total_records)
+            batch = chunks[start_idx:end_idx]
+            
+            batch_results = process_sub_batch(batch)
+            relevant_records.extend(batch_results)
+                    
+            processed_count = end_idx
+            if progress_callback:
+                progress_callback(processed=processed_count, batch_idx=b_idx + 1)
+                
+            time.sleep(0.5)
+            if (b_idx + 1) % 5 == 0 or b_idx + 1 == total_batches:
+                print(f"[AGENT 2 PROGRESS] Processed batch {b_idx + 1}/{total_batches}. Relevant so far: {len(relevant_records)}")
+    else:
+        # Concurrent processing (Paid Tier)
+        processed_lock = threading.Lock()
+        state = {"processed": 0}
         
-        is_relevant = False
-        reason = ""
-        if res_json:
-            is_relevant = res_json.get("relevant", False)
-            reason = res_json.get("reason", "")
+        def process_single(record):
+            user_message = f"Record ID: {record['id']}\nText:\n{record['text']}"
+            res_text = call_groq(system_prompt_single, user_message, MODEL_FAST)
+            res_json = extract_json(res_text)
             
-        if is_relevant:
-            r_copy = record.copy()
-            r_copy["relevance_reason"] = reason
-            relevant_records.append(r_copy)
+            is_relevant = False
+            reason = ""
+            if res_json and isinstance(res_json, dict):
+                is_relevant = res_json.get("relevant", False)
+                reason = res_json.get("reason", "")
+                
+            with processed_lock:
+                state["processed"] += 1
+                if progress_callback:
+                    progress_callback(processed=state["processed"], batch_idx=state["processed"])
+                    
+            if is_relevant:
+                r_copy = record.copy()
+                r_copy["relevance_reason"] = reason
+                return r_copy
+            return None
             
-        time.sleep(0.5)
-        if (idx + 1) % 20 == 0:
-            print(f"[AGENT 2 PROGRESS] Screened {idx + 1}/{len(chunks)} records. Relevant so far: {len(relevant_records)}")
-            
+        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
+            futures = [executor.submit(process_single, r) for r in chunks]
+            for fut in as_completed(futures):
+                res = fut.result()
+                if res:
+                    relevant_records.append(res)
+                    
     print(f"[AGENT 2] Extraction complete. Kept {len(relevant_records)}/{len(chunks)} records.")
     return relevant_records
 
-# ==========================================
 # STAGE 3: FIRST ORDER CODING AGENT
-# ==========================================
 
-def run_first_order_coding_agent(relevant_records, research_question, detected_category, output_dir):
+def run_first_order_coding_agent(relevant_records, research_question, detected_category, output_dir, progress_callback=None, concurrency_limit=1):
     # Fix 1: flatten if nested list of lists
-    if relevant_records and isinstance(
-            relevant_records[0], list):
-        relevant_records = [
-            item for sublist in relevant_records 
-            for item in sublist
-        ]
+    if relevant_records and isinstance(relevant_records[0], list):
+        relevant_records = [item for sublist in relevant_records for item in sublist]
     
     # Fix 2: unwrap if double-wrapped in dict
     if isinstance(relevant_records, dict):
         relevant_records = [relevant_records]
     
     # Fix 3: keep only valid dicts
-    relevant_records = [
-        r for r in relevant_records 
-        if isinstance(r, dict) and 'text' in r
-    ]
+    relevant_records = [r for r in relevant_records if isinstance(r, dict) and 'text' in r]
     
     if not relevant_records:
         print("[AGENT 3] No valid records to process")
         return []
     
-    print(f"[AGENT 3] Processing "
-          f"{len(relevant_records)} valid records...")
-    system_prompt = f"""You are conducting qualitative coding for a Gioia methodology study on {detected_category} in India.
-
-Research Question: {research_question}
-
-Generate 1-3 FIRST-ORDER CODES for this excerpt.
-
-First-order codes must:
-- Use language close to the actual text
-- Be specific to {detected_category} when possible
-- Capture WHO did WHAT (victim, fraudster, institution)
-- Be 3-7 words each
-- Reflect the informant's perspective
-
-Good code examples (adapt for your category):
-- "victim deceived by urgency pressure"
-- "fraudster posed as authority figure"
-- "victim lost savings before realizing fraud"
-- "bank refused to refund victim losses"
-- "near-miss due to prior fraud awareness"
-- "family member warned victim in time"
-- "police filed case but no recovery"
-
-Bad code examples (too vague):
-- "fraud occurred"
-- "victim lost money"
-- "scam happened"
-
-Also extract the single most powerful quote (1-2 sentences) from the text that best represents the victim/near-miss experience.
-
-Respond with ONLY this JSON, nothing else:
-{{"codes": ["code1", "code2"],
-  "key_quote": "exact quote from text"}}"""
-
+    print(f"[AGENT 3] Processing {len(relevant_records)} valid records...")
+    
+    if concurrency_limit == 1:
+        batch_size = 5
+    else:
+        batch_size = 1
+        
+    total_records = len(relevant_records)
+    
     processed_ids = set()
     first_order_codes = []
     
@@ -548,52 +645,187 @@ Respond with ONLY this JSON, nothing else:
         except Exception as e:
             print(f"[AGENT 3 RESUME WARNING] Could not load stage3_intermediate.json: {e}")
 
-    for idx, record in enumerate(relevant_records):
-        if record.get("id") in processed_ids:
-            continue
-            
-        user_message = f"Record ID: {record['id']}\nNarrative Type: {record['narrative_type']}\nText:\n{record['text']}"
-        res_text = call_groq(system_prompt, user_message, MODEL_FAST)
-        res_json = extract_json(res_text)
+    unprocessed_records = [r for r in relevant_records if r.get("id") not in processed_ids]
+    total_unprocessed = len(unprocessed_records)
+    
+    if total_unprocessed == 0:
+        print("[AGENT 3] All records already processed (resumed).")
+        return first_order_codes
         
-        # Fix: ensure res_json is dict not list
-        if isinstance(res_json, list):
-            if len(res_json) > 0 and isinstance(res_json[0], dict):
-                res_json = res_json[0]
-            else:
-                res_json = None
-                
-        codes = []
-        key_quote = ""
-        if res_json and isinstance(res_json, dict):
-            codes = res_json.get("codes", [])
-            key_quote = res_json.get("key_quote", "")
+    total_batches = (total_unprocessed + batch_size - 1) // batch_size
+    
+    if progress_callback:
+        progress_callback(processed=len(processed_ids), batch_idx=0)
+        
+    system_prompt_batched = f"""You are conducting qualitative coding for a Gioia methodology study on {detected_category} in India.
+
+Research Question: {research_question}
+
+You will receive a JSON list of records to code.
+For each record, generate 1-3 FIRST-ORDER CODES and extract the single most powerful informant quote.
+
+First-order codes must:
+- Use language close to the actual text
+- Be specific to {detected_category} when possible
+- Capture WHO did WHAT (victim, fraudster, institution)
+- Be 3-7 words each
+- Reflect the informant's perspective
+
+Good code examples:
+- "victim deceived by urgency pressure"
+- "fraudster posed as authority figure"
+- "victim lost savings before realizing fraud"
+- "bank refused to refund victim losses"
+- "near-miss due to prior fraud awareness"
+
+Extract the single most powerful quote (1-2 sentences) from the text that best represents the experience.
+
+Respond with ONLY a JSON object mapping each record's ID to its coding result, like this:
+{{
+  "record_id_1": {{
+    "codes": ["code1", "code2"],
+    "key_quote": "exact quote from text"
+  }},
+  "record_id_2": {{
+    "codes": ["code1"],
+    "key_quote": "another quote"
+  }}
+}}"""
+
+    system_prompt_single = f"""You are conducting qualitative coding for a Gioia methodology study on {detected_category} in India.
+
+Research Question: {research_question}
+
+Generate 1-3 FIRST-ORDER CODES for this excerpt.
+First-order codes must:
+- Use language close to the actual text
+- Be specific to {detected_category} when possible
+- Capture WHO did WHAT (victim, fraudster, institution)
+- Be 3-7 words each
+- Reflect the informant's perspective
+
+Also extract the single most powerful quote (1-2 sentences) from the text that best represents the experience.
+
+Respond with ONLY this JSON, nothing else:
+{{
+  "codes": ["code1", "code2"],
+  "key_quote": "exact quote from text"
+}}"""
+
+    if concurrency_limit == 1:
+        # Serial Batched Processing with recursive split-on-failure fallback
+        def process_sub_batch(sub_chunks, attempt_depth=0):
+            if not sub_chunks:
+                return []
             
-        for c in codes:
-            if c.strip():
-                first_order_codes.append({
-                    "code": c.strip(),
-                    "key_quote": key_quote,
-                    "chunk_id": record["id"],
-                    "date": record["date"],
-                    "narrative_type": record["narrative_type"],
-                    "source": record["source"],
-                    "chunk_text": record["text"]
-                })
+            batch_input = [{"id": r["id"], "narrative_type": r["narrative_type"], "text": r["text"]} for r in sub_chunks]
+            user_message = json.dumps(batch_input, indent=2)
+            
+            res_text = call_groq(system_prompt_batched, user_message, MODEL_FAST, progress_callback=progress_callback)
+            res_json = extract_json(res_text)
+            
+            # If batch failed and size > 1, split and recurse!
+            if (res_json is None or not isinstance(res_json, dict)) and len(sub_chunks) > 1 and attempt_depth < 3:
+                print(f"[BATCH FALLBACK] Batch of size {len(sub_chunks)} failed/too large. Splitting in half...")
+                mid = len(sub_chunks) // 2
+                left = process_sub_batch(sub_chunks[:mid], attempt_depth + 1)
+                right = process_sub_batch(sub_chunks[mid:], attempt_depth + 1)
+                return left + right
                 
-        if (idx + 1) % 20 == 0:
-            inter_path = os.path.join(output_dir, "stage3_intermediate.json")
+            results_list = []
+            for r in sub_chunks:
+                r_id = r["id"]
+                decision = res_json.get(r_id, {}) if isinstance(res_json, dict) else {}
+                codes = decision.get("codes", [])
+                key_quote = decision.get("key_quote", "")
+                
+                if not codes:
+                    codes = ["uncategorized qualitative concept"]
+                    
+                for c in codes:
+                    if c.strip():
+                        results_list.append({
+                            "code": c.strip(),
+                            "key_quote": key_quote,
+                            "chunk_id": r["id"],
+                            "date": r["date"],
+                            "narrative_type": r["narrative_type"],
+                            "source": r["source"],
+                            "chunk_text": r["text"]
+                        })
+            return results_list
+
+        for b_idx in range(total_batches):
+            start_idx = b_idx * batch_size
+            end_idx = min(start_idx + batch_size, total_unprocessed)
+            batch = unprocessed_records[start_idx:end_idx]
+            
+            batch_results = process_sub_batch(batch)
+            first_order_codes.extend(batch_results)
+                        
+            processed_count = len(processed_ids) + end_idx
+            if progress_callback:
+                progress_callback(processed=processed_count, batch_idx=b_idx + 1)
+                
+            # Save intermediate results
             with open(inter_path, "w", encoding="utf-8") as f:
                 json.dump(first_order_codes, f, indent=2)
-            print(f"[AGENT 3 PROGRESS] Saved intermediate codes ({len(first_order_codes)} codes)")
-            
-        time.sleep(0.5)
+                
+            time.sleep(0.5)
+            if (b_idx + 1) % 5 == 0 or b_idx + 1 == total_batches:
+                print(f"[AGENT 3 PROGRESS] Processed batch {b_idx + 1}/{total_batches}. Codes generated: {len(first_order_codes)}")
+    else:
+        # Concurrent processing (Paid Tier)
+        processed_lock = threading.Lock()
+        state = {"processed": len(processed_ids)}
         
+        def process_single(record):
+            user_message = f"Record ID: {record['id']}\nNarrative Type: {record['narrative_type']}\nText:\n{record['text']}"
+            res_text = call_groq(system_prompt_single, user_message, MODEL_FAST)
+            res_json = extract_json(res_text)
+            
+            codes = []
+            key_quote = ""
+            if res_json and isinstance(res_json, dict):
+                codes = res_json.get("codes", [])
+                key_quote = res_json.get("key_quote", "")
+                
+            if not codes:
+                codes = ["uncategorized qualitative concept"]
+                
+            local_codes = []
+            for c in codes:
+                if c.strip():
+                    local_codes.append({
+                        "code": c.strip(),
+                        "key_quote": key_quote,
+                        "chunk_id": record["id"],
+                        "date": record["date"],
+                        "narrative_type": record["narrative_type"],
+                        "source": record["source"],
+                        "chunk_text": record["text"]
+                    })
+            
+            with processed_lock:
+                state["processed"] += 1
+                if progress_callback:
+                    progress_callback(processed=state["processed"], batch_idx=state["processed"])
+                
+                first_order_codes.extend(local_codes)
+                
+                with open(inter_path, "w", encoding="utf-8") as f:
+                    json.dump(first_order_codes, f, indent=2)
+            
+            return True
+            
+        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
+            futures = [executor.submit(process_single, r) for r in unprocessed_records]
+            for fut in as_completed(futures):
+                fut.result()
+                
     return first_order_codes
 
-# ==========================================
 # STAGE 4: SECOND ORDER CODING AGENT
-# ==========================================
 
 def run_second_order_coding_agent(first_order_codes, research_question, detected_category):
     print("[AGENT 4] Starting Second-Order Coding Agent...")
@@ -724,9 +956,7 @@ Respond with ONLY this JSON, nothing else:
         
     return mapped_themes
 
-# ==========================================
 # STAGE 5: DIMENSION AGENT
-# ==========================================
 
 def run_dimension_agent(themes_list, research_question, detected_category):
     print("[AGENT 5] Starting Dimension Agent...")
@@ -793,9 +1023,7 @@ Respond with ONLY this JSON:
             raise ValueError("Failed to parse valid JSON from Agent 5")
     return res_json
 
-# ==========================================
 # STAGE 6: NARRATIVE AGENT
-# ==========================================
 
 def run_narrative_agent(first_order_codes, themes_list, dimensions_data, research_question, detected_category, stats):
     print("[AGENT 6] Starting Narrative Agent...")
@@ -917,9 +1145,7 @@ Respond with ONLY this JSON:
             raise ValueError("Failed to parse valid JSON from Agent 6")
     return res_json
 
-# ==========================================
 # COMPATIBILITY CLASS FOR WEB APP (FastAPI)
-# ==========================================
 
 class GioiaPipeline:
     def __init__(self, research_question, fraud_category=None, run_id=None):
@@ -1016,6 +1242,50 @@ class GioiaPipeline:
             "narrative": self.load_stage_text(6) or ""
         }
         
+    def make_progress_callback(self, stage_total_records, total_batches, start_time):
+        state = {
+            "processed": 0,
+            "batch_idx": 0,
+            "is_waiting": False,
+            "cooldown_addition": 0.0
+        }
+        
+        def callback(processed=None, batch_idx=None, is_waiting=None, est_time_remaining_add=0.0):
+            if processed is not None:
+                state["processed"] = processed
+            if batch_idx is not None:
+                state["batch_idx"] = batch_idx
+            if is_waiting is not None:
+                state["is_waiting"] = is_waiting
+            if est_time_remaining_add > 0:
+                state["cooldown_addition"] += est_time_remaining_add
+                
+            elapsed = time.time() - start_time
+            if state["batch_idx"] > 0:
+                avg_time_per_batch = elapsed / state["batch_idx"]
+                remaining_batches = total_batches - state["batch_idx"]
+                est_time = remaining_batches * avg_time_per_batch
+            else:
+                remaining_batches = total_batches - state["batch_idx"]
+                est_time = remaining_batches * 6.0 # assume 6s per batch
+                
+            if state["is_waiting"]:
+                est_time += state["cooldown_addition"]
+                
+            est_time = max(0, int(est_time))
+            
+            metadata = self.load_metadata()
+            metadata["stats"]["processed_records"] = state["processed"]
+            metadata["stats"]["total_records"] = stage_total_records
+            metadata["stats"]["current_batch"] = state["batch_idx"]
+            metadata["stats"]["total_batches"] = total_batches
+            metadata["stats"]["est_time_remaining"] = est_time
+            metadata["stats"]["rate_limit_waiting"] = state["is_waiting"]
+            metadata["updated_at"] = datetime.datetime.now().isoformat()
+            self.save_metadata(metadata)
+            
+        return callback
+
     def run(self, start_stage=1):
         metadata = self.load_metadata()
         metadata["status"] = "running"
@@ -1064,12 +1334,21 @@ class GioiaPipeline:
                 self.save_metadata(metadata)
                 
                 chunks = self.load_stage_data(1)
-                excerpts = run_extraction_agent(chunks, self.research_question, detected_category, self.output_dir)
+                
+                batch_size = 15 if CONCURRENCY_LIMIT == 1 else 1
+                total_batches = (len(chunks) + batch_size - 1) // batch_size
+                progress_cb = self.make_progress_callback(len(chunks), total_batches, time.time())
+                
+                excerpts = run_extraction_agent(
+                    chunks, self.research_question, detected_category, self.output_dir,
+                    progress_callback=progress_cb, concurrency_limit=CONCURRENCY_LIMIT
+                )
                 self.save_stage_data(2, excerpts)
                 
                 with open(os.path.join(self.output_dir, "relevant_excerpts.json"), "w", encoding="utf-8") as f:
                     json.dump(excerpts, f, indent=2)
                 
+                metadata = self.load_metadata()
                 metadata["stats"]["excerpts_count"] = len(excerpts)
                 self.save_metadata(metadata)
                 print(f"[STAGE 2] Extraction complete. {len(excerpts)} excerpts found.")
@@ -1081,12 +1360,21 @@ class GioiaPipeline:
                 self.save_metadata(metadata)
                 
                 excerpts = self.load_stage_data(2)
-                first_order = run_first_order_coding_agent(excerpts, self.research_question, detected_category, self.output_dir)
+                
+                batch_size = 15 if CONCURRENCY_LIMIT == 1 else 1
+                total_batches = (len(excerpts) + batch_size - 1) // batch_size
+                progress_cb = self.make_progress_callback(len(excerpts), total_batches, time.time())
+                
+                first_order = run_first_order_coding_agent(
+                    excerpts, self.research_question, detected_category, self.output_dir,
+                    progress_callback=progress_cb, concurrency_limit=CONCURRENCY_LIMIT
+                )
                 self.save_stage_data(3, first_order)
                 
                 with open(os.path.join(self.output_dir, "first_order_codes.json"), "w", encoding="utf-8") as f:
                     json.dump(first_order, f, indent=2)
                     
+                metadata = self.load_metadata()
                 metadata["stats"]["first_order_count"] = len(first_order)
                 self.save_metadata(metadata)
                 print(f"[STAGE 3] First Order Coding complete. {len(first_order)} codes generated.")
@@ -1226,9 +1514,7 @@ class GioiaPipeline:
             print(f"[ERROR] Gioia Pipeline failed at stage {metadata['current_stage']}: {e}")
             raise e
 
-# ==========================================
 # STANDALONE CLI RUNNER
-# ==========================================
 
 def main():
     parser = argparse.ArgumentParser(description="Run Gioia Qualitative Research Pipeline")

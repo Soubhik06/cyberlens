@@ -237,8 +237,13 @@ def get_stats():
         combined_cats = pd.concat([df_a["Fraud Category"], df_b["Cybercrime Category"]]).value_counts().head(5).to_dict()
         
         # Date range of dataset
-        min_year = int(min(df_a["parsed_year"].min(), df_b["parsed_year"].min()))
-        max_year = int(max(df_a["parsed_year"].max(), df_b["parsed_year"].max()))
+        val_min_a = pd.to_numeric(df_a["parsed_year"], errors="coerce").min()
+        val_min_b = pd.to_numeric(df_b["parsed_year"], errors="coerce").min()
+        val_max_a = pd.to_numeric(df_a["parsed_year"], errors="coerce").max()
+        val_max_b = pd.to_numeric(df_b["parsed_year"], errors="coerce").max()
+        
+        min_year = int(min(val_min_a, val_min_b)) if pd.notna(val_min_a) and pd.notna(val_min_b) else 2013
+        max_year = int(max(val_max_a, val_max_b)) if pd.notna(val_max_a) and pd.notna(val_max_b) else 2026
         
         return {
             "total_document_count": total_docs,
@@ -342,33 +347,180 @@ def get_documents(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def query_excel_stats(question: str):
+    import re
+    from insights import load_data
+    
+    try:
+        df_a, df_b = load_data()
+    except Exception as e:
+        print(f"Error loading Excel data in query_excel_stats: {e}")
+        return "", []
+        
+    context_lines = []
+    unique_sources = []
+    seen_docs = set()
+    
+    # Extract years (2013-2026)
+    years = [int(y) for y in re.findall(r'\b(20\d{2})\b', question)]
+    
+    # Extract keywords
+    words = [w.lower() for w in re.findall(r'\b[a-zA-Z]{3,}\b', question)]
+    stopwords = {"what", "were", "was", "the", "and", "for", "how", "many", "much", "lost", "loss", "total", "count", "number", "scam", "scams", "fraud", "frauds", "involving", "cases", "year", "scammed"}
+    keywords = [w for w in words if w not in stopwords]
+    
+    # Search Stream B (Government)
+    df_b_matches = []
+    cases_col = "Total cases" if "Total cases" in df_b.columns else "Total cases "
+    
+    for idx, row in df_b.iterrows():
+        score = 0
+        row_year_val = row.get("parsed_year")
+        try:
+            row_year = int(row_year_val) if pd.notna(row_year_val) else None
+        except:
+            row_year = None
+            
+        row_org = str(row.get("Source Organisation", "")).lower()
+        row_title = str(row.get("Report/Document Title", "")).lower()
+        row_cat = str(row.get("Cybercrime Category", "")).lower()
+        row_points = str(row.get("Key Data Points", "")).lower()
+        row_notes = str(row.get("Notes", "")).lower()
+        
+        row_text = f"{row_org} {row_title} {row_cat} {row_points} {row_notes}"
+        
+        if row_year and row_year in years:
+            score += 10
+        elif any(str(y) in row_text for y in years):
+            score += 5
+            
+        for kw in keywords:
+            if kw in row_text:
+                score += 2
+                
+        # If the question contains matching source org like "ncrb", "cert", "rbi"
+        for org_name in ["ncrb", "cert", "rbi"]:
+            if org_name in question.lower() and org_name in row_org:
+                score += 5
+                
+        if score > 0:
+            df_b_matches.append((score, row))
+            
+    df_b_matches.sort(key=lambda x: x[0], reverse=True)
+    if df_b_matches:
+        context_lines.append("=== Stream B (Government Statistics & Reports) Matches ===")
+        for score, row in df_b_matches[:10]:
+            doc_id = f"NB-{row.name+1:04d}" if hasattr(row, "name") else f"NB-{idx+1:04d}"
+            context_lines.append(
+                f"Document ID: {doc_id} | Source: {row.get('Source Organisation')} | Title: {row.get('Report/Document Title')} | "
+                f"Year: {row.get('Report Year')} | Category: {row.get('Cybercrime Category')} | "
+                f"Cases Count: {row.get(cases_col)} | Data Points: {row.get('Key Data Points')} | Notes: {row.get('Notes')}"
+            )
+            if doc_id not in seen_docs:
+                seen_docs.add(doc_id)
+                unique_sources.append({
+                    "doc_id": doc_id,
+                    "stream": "B",
+                    "title": row.get("Report/Document Title") or f"Government Report - {doc_id}",
+                    "source_platform": row.get("Source Organisation") or "Unknown",
+                    "original_date": str(row.get("Publication Date")) if pd.notna(row.get("Publication Date")) else str(row.get("Report Year")),
+                    "fraud_category": row.get("Cybercrime Category") or "Unknown"
+                })
+                
+    # Search Stream A (Victim Narratives)
+    df_a_matches = []
+    for idx, row in df_a.iterrows():
+        score = 0
+        row_id = str(row.get("Unique ID", ""))
+        row_title = str(row.get("Title/Headline", "")).lower()
+        row_cat = str(row.get("Fraud Category", "")).lower()
+        row_sub = str(row.get("Fraud Subcategory", "")).lower()
+        row_notes = str(row.get("Notes", "")).lower()
+        
+        row_text = f"{row_id} {row_title} {row_cat} {row_sub} {row_notes}"
+        
+        row_year = row.get("parsed_year")
+        try:
+            row_year_int = int(row_year) if pd.notna(row_year) else None
+        except (ValueError, TypeError):
+            row_year_int = None
+        if row_year_int and row_year_int in years:
+            score += 5
+            
+        for kw in keywords:
+            if kw in row_text:
+                score += 2
+                
+        has_loss_in_q = any(w in question.lower() for w in ["lost", "loss", "amount", "rupees", "inr"])
+        if has_loss_in_q and "loss:" in row_notes:
+            score += 4
+            
+        if score > 2:
+            df_a_matches.append((score, row))
+            
+    df_a_matches.sort(key=lambda x: x[0], reverse=True)
+    if df_a_matches:
+        if context_lines:
+            context_lines.append("")
+        context_lines.append("=== Stream A (Victim Narratives) Matches ===")
+        for score, row in df_a_matches[:15]:
+            doc_id = row.get("Unique ID")
+            context_lines.append(
+                f"Document ID: {doc_id} | Date: {row.get('Original Date')} | "
+                f"Category: {row.get('Fraud Category')} | Subcategory: {row.get('Fraud Subcategory')} | "
+                f"Title: {row.get('Title/Headline')} | Notes: {row.get('Notes')}"
+            )
+            if doc_id not in seen_docs:
+                seen_docs.add(doc_id)
+                unique_sources.append({
+                    "doc_id": doc_id,
+                    "stream": "A",
+                    "title": row.get("Title/Headline") or f"Victim Narrative - {doc_id}",
+                    "source_platform": row.get("Source Platform") or "Unknown",
+                    "original_date": row.get("Original Date") or "Unknown",
+                    "fraud_category": row.get("Fraud Category") or "Unknown"
+                })
+                
+    return "\n".join(context_lines), unique_sources
+
 @app.post("/api/chat")
 def get_chat_response(data: ChatRequest):
     try:
         from ingest import collection
         from gemini_client import gemini
         
-        # Query ChromaDB collection with n_results=8 for context
-        results = collection.query(
-            query_texts=[data.question],
-            n_results=8
-        )
+        # Check if query is statistical/numerical
+        is_num = any(w in data.question.lower() for w in [
+            "lost", "loss", "amount", "rupees", "inr", "cases", "arrests", 
+            "total", "count", "number", "statistics", "statistical", 
+            "figure", "figures", "metric", "metrics", "data points", 
+            "ncrb", "cert-in", "cert", "rbi", "report year"
+        ])
         
         context_str = ""
         unique_sources = []
-        seen_docs = set()
         
-        if results and results["documents"] and results["documents"][0]:
-            documents = results["documents"][0]
-            metadatas = results["metadatas"][0]
-            for doc, meta in zip(documents, metadatas):
-                doc_id = meta.get("doc_id")
-                if doc_id not in seen_docs:
-                    seen_docs.add(doc_id)
-                    unique_sources.append(meta)
-                
-                stream_label = "Stream A" if meta.get("stream") == "A" else "Stream B"
-                context_str += f"--- Context Source ---\nDocument ID: {doc_id}\nStream: {stream_label}\nTitle: {meta.get('title')}\nContent Chunk:\n{doc}\n\n"
+        if is_num:
+            context_str, unique_sources = query_excel_stats(data.question)
+            
+        # Fallback to ChromaDB RAG if context is empty
+        if not context_str:
+            results = collection.query(
+                query_texts=[data.question],
+                n_results=8
+            )
+            seen_docs = set()
+            if results and results["documents"] and results["documents"][0]:
+                documents = results["documents"][0]
+                metadatas = results["metadatas"][0]
+                for doc, meta in zip(documents, metadatas):
+                    doc_id = meta.get("doc_id")
+                    if doc_id not in seen_docs:
+                        seen_docs.add(doc_id)
+                        unique_sources.append(meta)
+                    
+                    stream_label = "Stream A" if meta.get("stream") == "A" else "Stream B"
+                    context_str += f"--- Context Source ---\nDocument ID: {doc_id}\nStream: {stream_label}\nTitle: {meta.get('title')}\nContent Chunk:\n{doc}\n\n"
                 
         # Build chat history string
         history_str = ""
@@ -383,8 +535,13 @@ def get_chat_response(data: ChatRequest):
         System Prompt:
         {SYSTEM_PROMPT}
         
+        Strict Grounding Rule:
+        - You must strictly answer the question using ONLY the provided Retrieved Context Documents.
+        - If the answer is not in the provided context (Excel matches or ChromaDB snippets), respond exactly with: "I cannot find this in the CyberLens dataset."
+        - Do not use any external knowledge or make assumptions.
+        
         Guidelines:
-        1. Answer the current question objectively using the provided evidence context document chunks.
+        1. Answer the current question objectively using the provided evidence context.
         2. Speak confidently. Avoid disclaimers.
         3. Cite sources by doc_id when stating facts.
         
@@ -392,7 +549,7 @@ def get_chat_response(data: ChatRequest):
         {history_str}
         
         Retrieved Context Documents:
-        {context_str}
+        {context_str if context_str.strip() else "No matching documents found in the dataset."}
         
         Current Question: {data.question}
         
@@ -419,7 +576,32 @@ def get_chat_response(data: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- INSIGHTS CHATBOT ENDPOINT ---
+
+class InsightChatRequest(BaseModel):
+    question: str
+
+@app.post("/api/insights/chat")
+def insights_chat(data: InsightChatRequest):
+    """
+    Natural-language Q&A about the cybercrime dataset.
+    Returns { answer: str, chart: dict (Plotly JSON), chart_title: str }.
+    """
+    try:
+        from insights import answer_insight_question
+        result = answer_insight_question(data.question)
+        return {
+            "answer": result.get("answer", ""),
+            "chart": result.get("chart"),
+            "chart_title": result.get("chart_title", "")
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- GIOIA METHODS & ENDPOINTS ---
+
 import threading
 from gioia_pipeline import GioiaPipeline, generate_run_id
 

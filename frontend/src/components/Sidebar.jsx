@@ -3,6 +3,8 @@ import { MessageSquare, BarChart2, Folder, PlusCircle, ChevronLeft, ChevronRight
 
 export default function Sidebar({ currentPage, setCurrentPage, docCount, isCollapsed, setIsCollapsed }) {
   const navItems = [
+    { id: "chat", name: "Research Chat", icon: MessageSquare },
+    { id: "insights", name: "Insights", icon: BarChart2 },
     { id: "submit", name: "Submit Experience", icon: PlusCircle },
     { id: "gioia", name: "Gioia Analysis", icon: Beaker },
   ];
