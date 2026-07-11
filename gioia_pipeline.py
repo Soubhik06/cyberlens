@@ -9,6 +9,9 @@ import argparse
 import requests
 import pandas as pd
 import threading
+import asyncio
+import aiohttp
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
@@ -16,6 +19,51 @@ load_dotenv()
 
 # CONCURRENCY SWITCH: Set to 1 for Free Tier (sequential batching), >1 for Paid Tier (parallel API calls)
 CONCURRENCY_LIMIT = 1
+
+class DynamicSemaphore:
+    def __init__(self, initial_limit):
+        self.limit = max(1, initial_limit)
+        self.current_concurrency = 0
+        self.lock = asyncio.Lock()
+        self.success_streak = 0
+        self.max_limit = max(1, initial_limit)
+
+    async def acquire(self):
+        while True:
+            async with self.lock:
+                if self.current_concurrency < self.limit:
+                    self.current_concurrency += 1
+                    return
+            await asyncio.sleep(0.05)
+
+    async def release(self):
+        async with self.lock:
+            self.current_concurrency = max(0, self.current_concurrency - 1)
+
+    async def report_success(self):
+        async with self.lock:
+            self.success_streak += 1
+            if self.success_streak >= 10:
+                if self.limit < self.max_limit:
+                    self.limit += 1
+                    print(f"[DYNAMIC CONCURRENCY] Success streak of 10. Increasing limit to {self.limit}")
+                self.success_streak = 0
+
+    async def report_rate_limit(self):
+        async with self.lock:
+            self.success_streak = 0
+            old_limit = self.limit
+            self.limit = max(1, self.limit // 2)
+            if self.limit != old_limit:
+                print(f"[DYNAMIC CONCURRENCY] Rate limit hit. Decreasing limit from {old_limit} to {self.limit}")
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.release()
+
 
 # CONSTANTS AT TOP OF FILE
 EXCEL_PATH = "data/all_data.xlsx"
@@ -145,7 +193,9 @@ def rotate_api_key():
     else:
         print("[API KEY ROTATION] Only one API key available. Cannot rotate.")
 
-def call_groq(system_prompt, user_message, model, max_tokens=2000, progress_callback=None):
+key_lock = asyncio.Lock()
+
+async def call_groq(session, system_prompt, user_message, model, max_tokens=2000, progress_callback=None, dynamic_sem=None):
     url = "https://api.groq.com/openai/v1/chat/completions"
     
     attempt = 0
@@ -168,37 +218,52 @@ def call_groq(system_prompt, user_message, model, max_tokens=2000, progress_call
             "max_tokens": max_tokens
         }
         try:
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
-            if r.status_code == 429:
-                delay = backoff + random.uniform(0.1, 1.0)
-                print(f"[RATE LIMIT 429] Attempt {attempt+1}/{max_attempts} failed with 429. Rotating key and waiting {delay:.2f} seconds...")
-                rotate_api_key()
-                if progress_callback:
-                    try:
-                        progress_callback(is_waiting=True, est_time_remaining_add=delay)
-                    except Exception as cb_err:
-                        print(f"Error in progress callback: {cb_err}")
-                time.sleep(delay)
-                if progress_callback:
-                    try:
-                        progress_callback(is_waiting=False)
-                    except Exception as cb_err:
-                        print(f"Error in progress callback: {cb_err}")
-                backoff = min(90.0, backoff * 2.0)
-                attempt += 1
-                continue
-                
-            if r.status_code != 200:
-                print(f"[API ERROR DETAILS] Status: {r.status_code}, Response: {r.text}")
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"]
+            async with session.post(url, headers=headers, json=payload, timeout=60) as r:
+                if r.status == 429:
+                    if dynamic_sem:
+                        await dynamic_sem.report_rate_limit()
+                    delay = backoff + random.uniform(0.1, 1.0)
+                    print(f"[RATE LIMIT 429] Attempt {attempt+1}/{max_attempts} failed with 429. Rotating key and waiting {delay:.2f} seconds...")
+                    async with key_lock:
+                        if get_current_api_key() == current_key:
+                            rotate_api_key()
+                    if progress_callback:
+                        try:
+                            if asyncio.iscoroutinefunction(progress_callback):
+                                await progress_callback(is_waiting=True, est_time_remaining_add=delay)
+                            else:
+                                progress_callback(is_waiting=True, est_time_remaining_add=delay)
+                        except Exception as cb_err:
+                            print(f"Error in progress callback: {cb_err}")
+                    await asyncio.sleep(delay)
+                    if progress_callback:
+                        try:
+                            if asyncio.iscoroutinefunction(progress_callback):
+                                await progress_callback(is_waiting=False)
+                            else:
+                                progress_callback(is_waiting=False)
+                        except Exception as cb_err:
+                            print(f"Error in progress callback: {cb_err}")
+                    backoff = min(90.0, backoff * 2.0)
+                    attempt += 1
+                    continue
+                    
+                if r.status != 200:
+                    text = await r.text()
+                    print(f"[API ERROR DETAILS] Status: {r.status}, Response: {text}")
+                r.raise_for_status()
+                if dynamic_sem:
+                    await dynamic_sem.report_success()
+                res_json = await r.json()
+                return res_json["choices"][0]["message"]["content"]
         except Exception as e:
             print(f"[API ERROR] Attempt {attempt+1}/{max_attempts} failed: {e}")
             delay = 2.0
-            time.sleep(delay)
+            await asyncio.sleep(delay)
             attempt += 1
             
     return None
+
 
 def extract_json(text):
     if not text:
@@ -412,8 +477,12 @@ def run_intake_agent(research_question):
     victim_sample = sample_evenly_by_date(victim_records, MAX_VICTIM)
     near_miss_sample = sample_evenly_by_date(near_miss_records, MAX_NEAR_MISS)
     
-    final_records = victim_sample + near_miss_sample
-    random.shuffle(final_records)
+    # Deterministic shuffle using a local random generator seeded with the research question
+    seed_hash = hashlib.sha256(research_question.encode('utf-8')).hexdigest()
+    seed_int = int(seed_hash[:8], 16)
+    local_rng = random.Random(seed_int)
+    local_rng.shuffle(final_records)
+
     
     web_count = sum(1 for r in final_records if r["source"] == "web_scraping")
     pq_count = sum(1 for r in final_records if r["source"] == "proquest")
@@ -442,21 +511,46 @@ def run_intake_agent(research_question):
 
 # STAGE 2: EXTRACTION AGENT
 
-def run_extraction_agent(chunks, research_question, detected_category, output_dir=None, progress_callback=None, concurrency_limit=1):
+async def run_extraction_agent(chunks, research_question, detected_category, output_dir=None, progress_callback=None, concurrency_limit=1):
     print(f"[AGENT 2] Starting Extraction Agent. Screening {len(chunks)} chunks for relevance...")
     
-    if concurrency_limit == 1:
-        batch_size = 5
-    else:
-        batch_size = 1
-        
-    total_records = len(chunks)
-    total_batches = (total_records + batch_size - 1) // batch_size
-    
-    if progress_callback:
-        progress_callback(processed=0, batch_idx=0)
-        
+    batch_size = 5
     relevant_records = []
+    processed_decisions = []
+    processed_ids = set()
+    
+    # Checkpoint resumption
+    inter_path = None
+    if output_dir:
+        inter_path = os.path.join(output_dir, "stage2_intermediate.json")
+        if os.path.exists(inter_path):
+            try:
+                with open(inter_path, "r", encoding="utf-8") as f:
+                    saved_decisions = json.load(f)
+                    if isinstance(saved_decisions, list):
+                        processed_decisions = saved_decisions
+                        processed_ids = {r.get("id") for r in saved_decisions if isinstance(r, dict) and r.get("id")}
+                        print(f"[AGENT 2 RESUME] Loaded {len(processed_decisions)} intermediate decisions. Already processed: {len(processed_ids)} chunks.")
+            except Exception as e:
+                print(f"[AGENT 2 RESUME WARNING] Could not load stage2_intermediate.json: {e}")
+                
+    unprocessed_chunks = [c for c in chunks if c.get("id") not in processed_ids]
+    total_unprocessed = len(unprocessed_chunks)
+    
+    if total_unprocessed == 0:
+        print("[AGENT 2] All records already processed (resumed).")
+        # Extract only the relevant records from processed_decisions
+        for r in processed_decisions:
+            if r.get("relevant", False):
+                r_copy = r.copy()
+                r_copy.pop("relevant", None)
+                relevant_records.append(r_copy)
+        return relevant_records
+
+    total_records = len(chunks)
+    total_batches = (total_unprocessed + batch_size - 1) // batch_size
+    
+    dynamic_sem = DynamicSemaphore(concurrency_limit)
     
     system_prompt_batched = f"""You are a research assistant screening text excerpts for a qualitative Gioia methodology study on {detected_category} in India (2014-2025).
 
@@ -490,122 +584,111 @@ Format example:
   {{"id": "id2", "relevant": false, "reason": "generic statistics without personal narrative"}}
 ]"""
 
-    system_prompt_single = f"""You are a research assistant screening text excerpts for a qualitative Gioia methodology study on {detected_category} in India (2014-2025).
+    processed_chunks_count = len(processed_ids)
+    processed_batches_count = 0
+    progress_lock = asyncio.Lock()
 
-Research Question: {research_question}
+    async def save_stage_data_sync(filepath, data):
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
-A record is RELEVANT if it contains ANY of:
-- A specific {detected_category} incident or personal victim/near-miss experience
-- Description of fraud method or modus operandi related to {detected_category}
-- Victim emotions, psychological impact, or behavioral responses
-- Financial or personal consequences to victim
-- Institutional response (police, bank, court, RBI, NPCI) to {detected_category}
-- Near-miss: person recognized and avoided fraud
+    async def save_stage_data_async(filepath, data):
+        await asyncio.to_thread(save_stage_data_sync, filepath, data)
 
-A record is NOT RELEVANT if it is:
-- General news with no personal experience angle
-- About a completely different fraud type
-- Non-Indian context with no India relevance
-- Pure statistics with no narrative element
-- Duplicate of another record's content
-
-Respond with ONLY this JSON, nothing else:
-{{"relevant": true, "reason": "one sentence"}}"""
-
-    if concurrency_limit == 1:
-        # Serial Batched Processing with recursive split-on-failure fallback
-        def process_sub_batch(sub_chunks, attempt_depth=0):
-            if not sub_chunks:
-                return []
+    async def process_sub_batch(session, sub_chunks, attempt_depth=0):
+        if not sub_chunks:
+            return []
+        
+        batch_input = [{"id": r["id"], "text": r["text"]} for r in sub_chunks]
+        user_message = json.dumps(batch_input, indent=2)
+        
+        async with dynamic_sem:
+            res_text = await call_groq(
+                session, system_prompt_batched, user_message, MODEL_FAST,
+                progress_callback=progress_callback, dynamic_sem=dynamic_sem
+            )
             
-            batch_input = [{"id": r["id"], "text": r["text"]} for r in sub_chunks]
-            user_message = json.dumps(batch_input, indent=2)
+        res_json = extract_json(res_text)
+        
+        # Split fallback logic
+        if res_json is None and len(sub_chunks) > 1 and attempt_depth < 3:
+            print(f"[BATCH FALLBACK] Batch of size {len(sub_chunks)} failed/too large. Splitting in half...")
+            mid = len(sub_chunks) // 2
+            left_task = process_sub_batch(session, sub_chunks[:mid], attempt_depth + 1)
+            right_task = process_sub_batch(session, sub_chunks[mid:], attempt_depth + 1)
+            left, right = await asyncio.gather(left_task, right_task)
+            return left + right
             
-            res_text = call_groq(system_prompt_batched, user_message, MODEL_FAST, progress_callback=progress_callback)
-            res_json = extract_json(res_text)
+        results_list = []
+        res_map = {}
+        if isinstance(res_json, list):
+            for item in res_json:
+                if isinstance(item, dict) and "id" in item:
+                    res_map[item["id"]] = item
+                    
+        for r in sub_chunks:
+            r_id = r["id"]
+            decision = res_map.get(r_id, {})
+            is_relevant = decision.get("relevant", False)
+            reason = decision.get("reason", "No reason provided by model or parsing failed")
             
-            # If batch failed (e.g. 413 token limit) and size > 1, split and recurse!
-            if res_json is None and len(sub_chunks) > 1 and attempt_depth < 3:
-                print(f"[BATCH FALLBACK] Batch of size {len(sub_chunks)} failed/too large. Splitting in half...")
-                mid = len(sub_chunks) // 2
-                left = process_sub_batch(sub_chunks[:mid], attempt_depth + 1)
-                right = process_sub_batch(sub_chunks[mid:], attempt_depth + 1)
-                return left + right
+            r_copy = r.copy()
+            r_copy["relevant"] = is_relevant
+            r_copy["relevance_reason"] = reason
+            results_list.append(r_copy)
+            
+        return results_list
+
+    async def process_batch_with_progress(session, batch):
+        nonlocal processed_chunks_count, processed_batches_count
+        batch_results = await process_sub_batch(session, batch)
+        
+        async with progress_lock:
+            processed_decisions.extend(batch_results)
+            processed_chunks_count += len(batch)
+            processed_batches_count += 1
+            
+            if progress_callback:
+                try:
+                    if asyncio.iscoroutinefunction(progress_callback):
+                        await progress_callback(processed=processed_chunks_count, batch_idx=processed_batches_count)
+                    else:
+                        progress_callback(processed=processed_chunks_count, batch_idx=processed_batches_count)
+                except Exception as cb_err:
+                    print(f"Error in progress callback: {cb_err}")
+                    
+            if inter_path:
+                await save_stage_data_async(inter_path, processed_decisions)
                 
-            results_list = []
-            res_map = {}
-            if isinstance(res_json, list):
-                for item in res_json:
-                    if isinstance(item, dict) and "id" in item:
-                        res_map[item["id"]] = item
-            
-            for r in sub_chunks:
-                r_id = r["id"]
-                decision = res_map.get(r_id, {})
-                is_relevant = decision.get("relevant", False)
-                reason = decision.get("reason", "No reason provided by model or parsing failed")
-                
-                if is_relevant:
-                    r_copy = r.copy()
-                    r_copy["relevance_reason"] = reason
-                    results_list.append(r_copy)
-            return results_list
+            if processed_batches_count % 5 == 0 or processed_chunks_count == total_records:
+                relevant_so_far = sum(1 for d in processed_decisions if d.get("relevant", False))
+                print(f"[AGENT 2 PROGRESS] Processed {processed_chunks_count}/{total_records} chunks. Relevant so far: {relevant_so_far}")
 
+    # Process all unprocessed chunks in parallel batches using a single ClientSession
+    async with aiohttp.ClientSession() as session:
+        tasks = []
         for b_idx in range(total_batches):
             start_idx = b_idx * batch_size
-            end_idx = min(start_idx + batch_size, total_records)
-            batch = chunks[start_idx:end_idx]
-            
-            batch_results = process_sub_batch(batch)
-            relevant_records.extend(batch_results)
-                    
-            processed_count = end_idx
-            if progress_callback:
-                progress_callback(processed=processed_count, batch_idx=b_idx + 1)
-                
-            time.sleep(0.5)
-            if (b_idx + 1) % 5 == 0 or b_idx + 1 == total_batches:
-                print(f"[AGENT 2 PROGRESS] Processed batch {b_idx + 1}/{total_batches}. Relevant so far: {len(relevant_records)}")
-    else:
-        # Concurrent processing (Paid Tier)
-        processed_lock = threading.Lock()
-        state = {"processed": 0}
+            end_idx = min(start_idx + batch_size, total_unprocessed)
+            batch = unprocessed_chunks[start_idx:end_idx]
+            tasks.append(process_batch_with_progress(session, batch))
         
-        def process_single(record):
-            user_message = f"Record ID: {record['id']}\nText:\n{record['text']}"
-            res_text = call_groq(system_prompt_single, user_message, MODEL_FAST)
-            res_json = extract_json(res_text)
+        await asyncio.gather(*tasks)
+
+    # Filter out relevant records to return
+    for r in processed_decisions:
+        if r.get("relevant", False):
+            r_copy = r.copy()
+            r_copy.pop("relevant", None)
+            relevant_records.append(r_copy)
             
-            is_relevant = False
-            reason = ""
-            if res_json and isinstance(res_json, dict):
-                is_relevant = res_json.get("relevant", False)
-                reason = res_json.get("reason", "")
-                
-            with processed_lock:
-                state["processed"] += 1
-                if progress_callback:
-                    progress_callback(processed=state["processed"], batch_idx=state["processed"])
-                    
-            if is_relevant:
-                r_copy = record.copy()
-                r_copy["relevance_reason"] = reason
-                return r_copy
-            return None
-            
-        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
-            futures = [executor.submit(process_single, r) for r in chunks]
-            for fut in as_completed(futures):
-                res = fut.result()
-                if res:
-                    relevant_records.append(res)
-                    
     print(f"[AGENT 2] Extraction complete. Kept {len(relevant_records)}/{len(chunks)} records.")
     return relevant_records
 
+
 # STAGE 3: FIRST ORDER CODING AGENT
 
-def run_first_order_coding_agent(relevant_records, research_question, detected_category, output_dir, progress_callback=None, concurrency_limit=1):
+async def run_first_order_coding_agent(relevant_records, research_question, detected_category, output_dir, progress_callback=None, concurrency_limit=1):
     # Fix 1: flatten if nested list of lists
     if relevant_records and isinstance(relevant_records[0], list):
         relevant_records = [item for sublist in relevant_records for item in sublist]
@@ -623,15 +706,9 @@ def run_first_order_coding_agent(relevant_records, research_question, detected_c
     
     print(f"[AGENT 3] Processing {len(relevant_records)} valid records...")
     
-    if concurrency_limit == 1:
-        batch_size = 5
-    else:
-        batch_size = 1
-        
-    total_records = len(relevant_records)
-    
-    processed_ids = set()
+    batch_size = 5
     first_order_codes = []
+    processed_ids = set()
     
     inter_path = os.path.join(output_dir, "stage3_intermediate.json")
     if os.path.exists(inter_path):
@@ -652,11 +729,11 @@ def run_first_order_coding_agent(relevant_records, research_question, detected_c
         print("[AGENT 3] All records already processed (resumed).")
         return first_order_codes
         
+    total_records = len(relevant_records)
     total_batches = (total_unprocessed + batch_size - 1) // batch_size
     
-    if progress_callback:
-        progress_callback(processed=len(processed_ids), batch_idx=0)
-        
+    dynamic_sem = DynamicSemaphore(concurrency_limit)
+    
     system_prompt_batched = f"""You are conducting qualitative coding for a Gioia methodology study on {detected_category} in India.
 
 Research Question: {research_question}
@@ -692,142 +769,104 @@ Respond with ONLY a JSON object mapping each record's ID to its coding result, l
   }}
 }}"""
 
-    system_prompt_single = f"""You are conducting qualitative coding for a Gioia methodology study on {detected_category} in India.
+    processed_chunks_count = len(processed_ids)
+    processed_batches_count = 0
+    progress_lock = asyncio.Lock()
 
-Research Question: {research_question}
+    async def save_stage_data_sync(filepath, data):
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
-Generate 1-3 FIRST-ORDER CODES for this excerpt.
-First-order codes must:
-- Use language close to the actual text
-- Be specific to {detected_category} when possible
-- Capture WHO did WHAT (victim, fraudster, institution)
-- Be 3-7 words each
-- Reflect the informant's perspective
+    async def save_stage_data_async(filepath, data):
+        await asyncio.to_thread(save_stage_data_sync, filepath, data)
 
-Also extract the single most powerful quote (1-2 sentences) from the text that best represents the experience.
-
-Respond with ONLY this JSON, nothing else:
-{{
-  "codes": ["code1", "code2"],
-  "key_quote": "exact quote from text"
-}}"""
-
-    if concurrency_limit == 1:
-        # Serial Batched Processing with recursive split-on-failure fallback
-        def process_sub_batch(sub_chunks, attempt_depth=0):
-            if not sub_chunks:
-                return []
+    async def process_sub_batch(session, sub_chunks, attempt_depth=0):
+        if not sub_chunks:
+            return []
+        
+        batch_input = [{"id": r["id"], "narrative_type": r["narrative_type"], "text": r["text"]} for r in sub_chunks]
+        user_message = json.dumps(batch_input, indent=2)
+        
+        async with dynamic_sem:
+            res_text = await call_groq(
+                session, system_prompt_batched, user_message, MODEL_FAST,
+                progress_callback=progress_callback, dynamic_sem=dynamic_sem
+            )
             
-            batch_input = [{"id": r["id"], "narrative_type": r["narrative_type"], "text": r["text"]} for r in sub_chunks]
-            user_message = json.dumps(batch_input, indent=2)
+        res_json = extract_json(res_text)
+        
+        # Split fallback logic
+        if (res_json is None or not isinstance(res_json, dict)) and len(sub_chunks) > 1 and attempt_depth < 3:
+            print(f"[BATCH FALLBACK] Batch of size {len(sub_chunks)} failed/too large. Splitting in half...")
+            mid = len(sub_chunks) // 2
+            left_task = process_sub_batch(session, sub_chunks[:mid], attempt_depth + 1)
+            right_task = process_sub_batch(session, sub_chunks[mid:], attempt_depth + 1)
+            left, right = await asyncio.gather(left_task, right_task)
+            return left + right
             
-            res_text = call_groq(system_prompt_batched, user_message, MODEL_FAST, progress_callback=progress_callback)
-            res_json = extract_json(res_text)
+        results_list = []
+        for r in sub_chunks:
+            r_id = r["id"]
+            decision = res_json.get(r_id, {}) if isinstance(res_json, dict) else {}
+            codes = decision.get("codes", [])
+            key_quote = decision.get("key_quote", "")
             
-            # If batch failed and size > 1, split and recurse!
-            if (res_json is None or not isinstance(res_json, dict)) and len(sub_chunks) > 1 and attempt_depth < 3:
-                print(f"[BATCH FALLBACK] Batch of size {len(sub_chunks)} failed/too large. Splitting in half...")
-                mid = len(sub_chunks) // 2
-                left = process_sub_batch(sub_chunks[:mid], attempt_depth + 1)
-                right = process_sub_batch(sub_chunks[mid:], attempt_depth + 1)
-                return left + right
+            if not codes:
+                codes = ["uncategorized qualitative concept"]
                 
-            results_list = []
-            for r in sub_chunks:
-                r_id = r["id"]
-                decision = res_json.get(r_id, {}) if isinstance(res_json, dict) else {}
-                codes = decision.get("codes", [])
-                key_quote = decision.get("key_quote", "")
-                
-                if not codes:
-                    codes = ["uncategorized qualitative concept"]
+            for c in codes:
+                if c.strip():
+                    results_list.append({
+                        "code": c.strip(),
+                        "key_quote": key_quote,
+                        "chunk_id": r["id"],
+                        "date": r["date"],
+                        "narrative_type": r["narrative_type"],
+                        "source": r["source"],
+                        "chunk_text": r["text"]
+                    })
+        return results_list
+
+    async def process_batch_with_progress(session, batch):
+        nonlocal processed_chunks_count, processed_batches_count
+        batch_results = await process_sub_batch(session, batch)
+        
+        async with progress_lock:
+            first_order_codes.extend(batch_results)
+            processed_chunks_count += len(batch)
+            processed_batches_count += 1
+            
+            if progress_callback:
+                try:
+                    if asyncio.iscoroutinefunction(progress_callback):
+                        await progress_callback(processed=processed_chunks_count, batch_idx=processed_batches_count)
+                    else:
+                        progress_callback(processed=processed_chunks_count, batch_idx=processed_batches_count)
+                except Exception as cb_err:
+                    print(f"Error in progress callback: {cb_err}")
                     
-                for c in codes:
-                    if c.strip():
-                        results_list.append({
-                            "code": c.strip(),
-                            "key_quote": key_quote,
-                            "chunk_id": r["id"],
-                            "date": r["date"],
-                            "narrative_type": r["narrative_type"],
-                            "source": r["source"],
-                            "chunk_text": r["text"]
-                        })
-            return results_list
+            await save_stage_data_async(inter_path, first_order_codes)
+            
+            if processed_batches_count % 5 == 0 or processed_chunks_count == total_records:
+                print(f"[AGENT 3 PROGRESS] Processed {processed_chunks_count}/{total_records} chunks. Codes generated: {len(first_order_codes)}")
 
+    # Process all unprocessed chunks in parallel batches using a single ClientSession
+    async with aiohttp.ClientSession() as session:
+        tasks = []
         for b_idx in range(total_batches):
             start_idx = b_idx * batch_size
             end_idx = min(start_idx + batch_size, total_unprocessed)
             batch = unprocessed_records[start_idx:end_idx]
+            tasks.append(process_batch_with_progress(session, batch))
             
-            batch_results = process_sub_batch(batch)
-            first_order_codes.extend(batch_results)
-                        
-            processed_count = len(processed_ids) + end_idx
-            if progress_callback:
-                progress_callback(processed=processed_count, batch_idx=b_idx + 1)
-                
-            # Save intermediate results
-            with open(inter_path, "w", encoding="utf-8") as f:
-                json.dump(first_order_codes, f, indent=2)
-                
-            time.sleep(0.5)
-            if (b_idx + 1) % 5 == 0 or b_idx + 1 == total_batches:
-                print(f"[AGENT 3 PROGRESS] Processed batch {b_idx + 1}/{total_batches}. Codes generated: {len(first_order_codes)}")
-    else:
-        # Concurrent processing (Paid Tier)
-        processed_lock = threading.Lock()
-        state = {"processed": len(processed_ids)}
+        await asyncio.gather(*tasks)
         
-        def process_single(record):
-            user_message = f"Record ID: {record['id']}\nNarrative Type: {record['narrative_type']}\nText:\n{record['text']}"
-            res_text = call_groq(system_prompt_single, user_message, MODEL_FAST)
-            res_json = extract_json(res_text)
-            
-            codes = []
-            key_quote = ""
-            if res_json and isinstance(res_json, dict):
-                codes = res_json.get("codes", [])
-                key_quote = res_json.get("key_quote", "")
-                
-            if not codes:
-                codes = ["uncategorized qualitative concept"]
-                
-            local_codes = []
-            for c in codes:
-                if c.strip():
-                    local_codes.append({
-                        "code": c.strip(),
-                        "key_quote": key_quote,
-                        "chunk_id": record["id"],
-                        "date": record["date"],
-                        "narrative_type": record["narrative_type"],
-                        "source": record["source"],
-                        "chunk_text": record["text"]
-                    })
-            
-            with processed_lock:
-                state["processed"] += 1
-                if progress_callback:
-                    progress_callback(processed=state["processed"], batch_idx=state["processed"])
-                
-                first_order_codes.extend(local_codes)
-                
-                with open(inter_path, "w", encoding="utf-8") as f:
-                    json.dump(first_order_codes, f, indent=2)
-            
-            return True
-            
-        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
-            futures = [executor.submit(process_single, r) for r in unprocessed_records]
-            for fut in as_completed(futures):
-                fut.result()
-                
     return first_order_codes
+
 
 # STAGE 4: SECOND ORDER CODING AGENT
 
-def run_second_order_coding_agent(first_order_codes, research_question, detected_category):
+async def run_second_order_coding_agent(session, first_order_codes, research_question, detected_category):
     print("[AGENT 4] Starting Second-Order Coding Agent...")
     if not first_order_codes:
         print("[AGENT 4 ERROR] No first-order codes found to process. Cannot proceed.")
@@ -901,13 +940,13 @@ Respond with ONLY this JSON, nothing else:
 
     user_message = f"First-order codes:\n{codes_string}"
     
-    res_text = call_groq(system_prompt, user_message, MODEL_SMART, max_tokens=4000)
+    res_text = await call_groq(session, system_prompt, user_message, MODEL_SMART, max_tokens=4000)
     res_json = extract_json(res_text)
     
     if res_json is None:
         print("[JSON ERROR] Retry with stricter prompt for Agent 4...")
         retry_prompt = system_prompt + "\n\nYou must respond with valid JSON only. No markdown block, no backticks."
-        res_text = call_groq(retry_prompt, user_message, MODEL_SMART, max_tokens=4000)
+        res_text = await call_groq(session, retry_prompt, user_message, MODEL_SMART, max_tokens=4000)
         res_json = extract_json(res_text)
         if res_json is None:
             raise ValueError("Failed to parse valid JSON from Agent 4")
@@ -958,7 +997,7 @@ Respond with ONLY this JSON, nothing else:
 
 # STAGE 5: DIMENSION AGENT
 
-def run_dimension_agent(themes_list, research_question, detected_category):
+async def run_dimension_agent(session, themes_list, research_question, detected_category):
     print("[AGENT 5] Starting Dimension Agent...")
     if not themes_list:
         print("[AGENT 5 ERROR] No second-order themes found. Cannot proceed.")
@@ -1012,12 +1051,12 @@ Respond with ONLY this JSON:
 
     user_message = f"Second-Order Themes:\n{json.dumps(themes_input, indent=2)}"
     
-    res_text = call_groq(system_prompt, user_message, MODEL_SMART, max_tokens=2000)
+    res_text = await call_groq(session, system_prompt, user_message, MODEL_SMART, max_tokens=2000)
     res_json = extract_json(res_text)
     if res_json is None:
         print("[JSON ERROR] Retry with stricter prompt for Agent 5...")
         retry_prompt = system_prompt + "\n\nYou must respond with valid JSON only. No markdown block, no backticks."
-        res_text = call_groq(retry_prompt, user_message, MODEL_SMART, max_tokens=2000)
+        res_text = await call_groq(session, retry_prompt, user_message, MODEL_SMART, max_tokens=2000)
         res_json = extract_json(res_text)
         if res_json is None:
             raise ValueError("Failed to parse valid JSON from Agent 5")
@@ -1025,7 +1064,7 @@ Respond with ONLY this JSON:
 
 # STAGE 6: NARRATIVE AGENT
 
-def run_narrative_agent(first_order_codes, themes_list, dimensions_data, research_question, detected_category, stats):
+async def run_narrative_agent(session, first_order_codes, themes_list, dimensions_data, research_question, detected_category, stats):
     print("[AGENT 6] Starting Narrative Agent...")
     
     # Keywords matching helper
@@ -1134,16 +1173,17 @@ Respond with ONLY this JSON:
 
     user_message = f"Gioia Coding Structure:\n{json.dumps(structure_context, indent=2)}\n\nTemporal Quotes Map:\n{temporal_str}"
     
-    res_text = call_groq(system_prompt, user_message, MODEL_SMART, max_tokens=4000)
+    res_text = await call_groq(session, system_prompt, user_message, MODEL_SMART, max_tokens=4000)
     res_json = extract_json(res_text)
     if res_json is None:
         print("[JSON ERROR] Retry with stricter prompt for Agent 6...")
         retry_prompt = system_prompt + "\n\nYou must respond with valid JSON only. No markdown block, no backticks."
-        res_text = call_groq(retry_prompt, user_message, MODEL_SMART, max_tokens=4000)
+        res_text = await call_groq(session, retry_prompt, user_message, MODEL_SMART, max_tokens=4000)
         res_json = extract_json(res_text)
         if res_json is None:
             raise ValueError("Failed to parse valid JSON from Agent 6")
     return res_json
+
 
 # COMPATIBILITY CLASS FOR WEB APP (FastAPI)
 
@@ -1287,6 +1327,21 @@ class GioiaPipeline:
         return callback
 
     def run(self, start_stage=1):
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, self.run_async(start_stage))
+                return future.result()
+        else:
+            return loop.run_until_complete(self.run_async(start_stage))
+
+    async def run_async(self, start_stage=1):
         metadata = self.load_metadata()
         metadata["status"] = "running"
         metadata["error"] = None
@@ -1320,7 +1375,7 @@ class GioiaPipeline:
                 metadata["current_stage"] = 1
                 self.save_metadata(metadata)
                 
-                chunks = run_intake_agent(self.research_question)
+                chunks = await asyncio.to_thread(run_intake_agent, self.research_question)
                 self.save_stage_data(1, chunks)
                 
                 metadata["stats"]["chunks_count"] = len(chunks)
@@ -1335,11 +1390,11 @@ class GioiaPipeline:
                 
                 chunks = self.load_stage_data(1)
                 
-                batch_size = 15 if CONCURRENCY_LIMIT == 1 else 1
+                batch_size = 5
                 total_batches = (len(chunks) + batch_size - 1) // batch_size
                 progress_cb = self.make_progress_callback(len(chunks), total_batches, time.time())
                 
-                excerpts = run_extraction_agent(
+                excerpts = await run_extraction_agent(
                     chunks, self.research_question, detected_category, self.output_dir,
                     progress_callback=progress_cb, concurrency_limit=CONCURRENCY_LIMIT
                 )
@@ -1361,11 +1416,11 @@ class GioiaPipeline:
                 
                 excerpts = self.load_stage_data(2)
                 
-                batch_size = 15 if CONCURRENCY_LIMIT == 1 else 1
+                batch_size = 5
                 total_batches = (len(excerpts) + batch_size - 1) // batch_size
                 progress_cb = self.make_progress_callback(len(excerpts), total_batches, time.time())
                 
-                first_order = run_first_order_coding_agent(
+                first_order = await run_first_order_coding_agent(
                     excerpts, self.research_question, detected_category, self.output_dir,
                     progress_callback=progress_cb, concurrency_limit=CONCURRENCY_LIMIT
                 )
@@ -1379,82 +1434,84 @@ class GioiaPipeline:
                 self.save_metadata(metadata)
                 print(f"[STAGE 3] First Order Coding complete. {len(first_order)} codes generated.")
                 
-            # Stage 4: Second Order Coding
-            if start_stage <= 4:
-                print(f"[STAGE 4] Running Second Order Coding Agent...")
-                metadata["current_stage"] = 4
-                self.save_metadata(metadata)
-                
-                first_order = self.load_stage_data(3)
-                second_order = run_second_order_coding_agent(first_order, self.research_question, detected_category)
-                self.save_stage_data(4, second_order)
-                
-                with open(os.path.join(self.output_dir, "second_order_themes.json"), "w", encoding="utf-8") as f:
-                    json.dump(second_order, f, indent=2)
+            # Stages 4, 5, 6 require a ClientSession
+            async with aiohttp.ClientSession() as session:
+                # Stage 4: Second Order Coding
+                if start_stage <= 4:
+                    print(f"[STAGE 4] Running Second Order Coding Agent...")
+                    metadata["current_stage"] = 4
+                    self.save_metadata(metadata)
                     
-                metadata["stats"]["themes_count"] = len(second_order)
-                self.save_metadata(metadata)
-                print(f"[STAGE 4] Second Order Coding complete. {len(second_order)} themes created.")
-                
-            # Stage 5: Dimension Agent
-            if start_stage <= 5:
-                print(f"[STAGE 5] Running Dimension Agent...")
-                metadata["current_stage"] = 5
-                self.save_metadata(metadata)
-                
-                second_order = self.load_stage_data(4)
-                dimensions = run_dimension_agent(second_order, self.research_question, detected_category)
-                
-                self.save_stage_data("5_raw", dimensions)
-                
-                frontend_dimensions = []
-                for dim in dimensions.get("aggregate_dimensions", []):
-                    frontend_dimensions.append({
-                        "dimension_name": dim.get("dimension_name", ""),
-                        "themes": dim.get("themes_included", []),
-                        "theoretical_explanation": f"Concept: {dim.get('theoretical_concept', '')}\nImplication: {dim.get('theoretical_implication', '')}"
-                    })
-                self.save_stage_data(5, frontend_dimensions)
-                
-                with open(os.path.join(self.output_dir, "aggregate_dimensions.json"), "w", encoding="utf-8") as f:
-                    json.dump(dimensions, f, indent=2)
+                    first_order = self.load_stage_data(3)
+                    second_order = await run_second_order_coding_agent(session, first_order, self.research_question, detected_category)
+                    self.save_stage_data(4, second_order)
                     
-                metadata["stats"]["dimensions_count"] = len(dimensions.get("aggregate_dimensions", []))
-                self.save_metadata(metadata)
-                print(f"[STAGE 5] Dimension Analysis complete.")
-                
-            # Stage 6: Narrative Agent
-            if start_stage <= 6:
-                print(f"[STAGE 6] Running Narrative Agent...")
-                metadata["current_stage"] = 6
-                self.save_metadata(metadata)
-                
-                first_order = self.load_stage_data(3)
-                second_order = self.load_stage_data(4)
-                dimensions = self.load_stage_data("5_raw")
-                
-                stats_for_narrative = {
-                    "total_records": metadata["stats"]["chunks_count"],
-                    "relevant_count": metadata["stats"]["excerpts_count"],
-                    "codes_count": metadata["stats"]["first_order_count"],
-                    "themes_count": metadata["stats"]["themes_count"],
-                    "dimensions_count": metadata["stats"]["dimensions_count"]
-                }
-                
-                narrative = run_narrative_agent(first_order, second_order, dimensions, self.research_question, detected_category, stats_for_narrative)
-                
-                narrative_combined = f"{narrative.get('methods_paragraph', '')}\n\n{narrative.get('findings_section', '')}"
-                self.save_stage_text(6, narrative_combined)
-                
-                with open(os.path.join(self.output_dir, "gioia_data_structure.md"), "w", encoding="utf-8") as f:
-                    f.write(narrative.get("data_structure_table", ""))
-                with open(os.path.join(self.output_dir, "methods_paragraph.txt"), "w", encoding="utf-8") as f:
-                    f.write(narrative.get("methods_paragraph", ""))
-                with open(os.path.join(self.output_dir, "findings_section.txt"), "w", encoding="utf-8") as f:
-                    f.write(narrative.get("findings_section", ""))
+                    with open(os.path.join(self.output_dir, "second_order_themes.json"), "w", encoding="utf-8") as f:
+                        json.dump(second_order, f, indent=2)
+                        
+                    metadata["stats"]["themes_count"] = len(second_order)
+                    self.save_metadata(metadata)
+                    print(f"[STAGE 4] Second Order Coding complete. {len(second_order)} themes created.")
                     
-                print(f"[STAGE 6] Narrative generation complete.")
-                
+                # Stage 5: Dimension Agent
+                if start_stage <= 5:
+                    print(f"[STAGE 5] Running Dimension Agent...")
+                    metadata["current_stage"] = 5
+                    self.save_metadata(metadata)
+                    
+                    second_order = self.load_stage_data(4)
+                    dimensions = await run_dimension_agent(session, second_order, self.research_question, detected_category)
+                    
+                    self.save_stage_data("5_raw", dimensions)
+                    
+                    frontend_dimensions = []
+                    for dim in dimensions.get("aggregate_dimensions", []):
+                        frontend_dimensions.append({
+                            "dimension_name": dim.get("dimension_name", ""),
+                            "themes": dim.get("themes_included", []),
+                            "theoretical_explanation": f"Concept: {dim.get('theoretical_concept', '')}\nImplication: {dim.get('theoretical_implication', '')}"
+                        })
+                    self.save_stage_data(5, frontend_dimensions)
+                    
+                    with open(os.path.join(self.output_dir, "aggregate_dimensions.json"), "w", encoding="utf-8") as f:
+                        json.dump(dimensions, f, indent=2)
+                        
+                    metadata["stats"]["dimensions_count"] = len(dimensions.get("aggregate_dimensions", []))
+                    self.save_metadata(metadata)
+                    print(f"[STAGE 5] Dimension Analysis complete.")
+                    
+                # Stage 6: Narrative Agent
+                if start_stage <= 6:
+                    print(f"[STAGE 6] Running Narrative Agent...")
+                    metadata["current_stage"] = 6
+                    self.save_metadata(metadata)
+                    
+                    first_order = self.load_stage_data(3)
+                    second_order = self.load_stage_data(4)
+                    dimensions = self.load_stage_data("5_raw")
+                    
+                    stats_for_narrative = {
+                        "total_records": metadata["stats"]["chunks_count"],
+                        "relevant_count": metadata["stats"]["excerpts_count"],
+                        "codes_count": metadata["stats"]["first_order_count"],
+                        "themes_count": metadata["stats"]["themes_count"],
+                        "dimensions_count": metadata["stats"]["dimensions_count"]
+                    }
+                    
+                    narrative = await run_narrative_agent(session, first_order, second_order, dimensions, self.research_question, detected_category, stats_for_narrative)
+                    
+                    narrative_combined = f"{narrative.get('methods_paragraph', '')}\n\n{narrative.get('findings_section', '')}"
+                    self.save_stage_text(6, narrative_combined)
+                    
+                    with open(os.path.join(self.output_dir, "gioia_data_structure.md"), "w", encoding="utf-8") as f:
+                        f.write(narrative.get("data_structure_table", ""))
+                    with open(os.path.join(self.output_dir, "methods_paragraph.txt"), "w", encoding="utf-8") as f:
+                        f.write(narrative.get("methods_paragraph", ""))
+                    with open(os.path.join(self.output_dir, "findings_section.txt"), "w", encoding="utf-8") as f:
+                        f.write(narrative.get("findings_section", ""))
+                        
+                    print(f"[STAGE 6] Narrative generation complete.")
+                    
             # Finish Pipeline
             metadata["status"] = "complete"
             metadata["current_stage"] = 6
@@ -1530,3 +1587,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -16,9 +16,21 @@ export default function GioiaAnalysis({ cats }) {
   
   const [queryQuestion, setQueryQuestion] = useState("");
   const [queryAnswer, setQueryAnswer] = useState("");
-  const [queryWorkflow, setQueryWorkflow] = useState(null);
   const [queryLoading, setQueryLoading] = useState(false);
+  const [queryWorkflow, setQueryWorkflow] = useState(null);
   const [queryError, setQueryError] = useState(null);
+  const [expandedThemes, setExpandedThemes] = useState({});
+  const toggleThemeExpand = (themeName) => {
+    setExpandedThemes(prev => ({ ...prev, [themeName]: !prev[themeName] }));
+  };
+
+  const formatTime = (seconds) => {
+    if (seconds === undefined || seconds === null || isNaN(seconds)) return "estimating...";
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m === 0) return `${s}s`;
+    return `${m}m ${s}s`;
+  };
 
   const [expandedPanels, setExpandedPanels] = useState({
     structure: true,
@@ -303,6 +315,56 @@ export default function GioiaAnalysis({ cats }) {
                 </div>
               )}
 
+              {/* Real-time Perceived Progress Indicator */}
+              {status.status === "running" && status.stats && (status.current_stage === 2 || status.current_stage === 3) && (
+                <div className="bg-[#0d1117] border border-[#21262d] rounded-lg p-4 mb-6 space-y-3 shadow-inner">
+                  <div className="flex justify-between items-center text-xs font-semibold">
+                    <span className="text-[#58a6ff] flex items-center gap-2">
+                      <Loader2 className="animate-spin" size={14} />
+                      {status.current_stage === 2 ? "Screening Excerpts (Stage 2/6)" : "First-Order Qualitative Coding (Stage 3/6)"}
+                    </span>
+                    {status.stats.est_time_remaining !== undefined && (
+                      <span className="text-[#bc8cff] font-mono">
+                        Est. Time Remaining: {formatTime(status.stats.est_time_remaining)}
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[11px] text-[#8b949e]">
+                      <span>
+                        {status.stats.current_batch !== undefined && status.stats.total_batches !== undefined ? 
+                          `Batch ${status.stats.current_batch}/${status.stats.total_batches} Processing...` : 
+                          "Analyzing Records..."}
+                      </span>
+                      <span>
+                        {status.stats.processed_records !== undefined ? status.stats.processed_records : 0} / {status.stats.total_records || 400} Records Analyzed
+                      </span>
+                    </div>
+                    
+                    {/* Progress Bar */}
+                    <div className="w-full bg-[#161b22] h-2 rounded-full overflow-hidden border border-[#21262d]">
+                      <div 
+                        className="h-full bg-gradient-to-r from-[#58a6ff] to-[#bc8cff] transition-all duration-500 rounded-full"
+                        style={{ 
+                          width: `${Math.min(100, (((status.stats.processed_records || 0) / (status.stats.total_records || 400)) * 100))}%` 
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* 429 Cooldown warning */}
+                  {status.stats.rate_limit_waiting && (
+                    <div className="bg-[#d29922]/15 border border-[#d29922]/30 rounded-lg p-2.5 text-xs text-[#d29922] flex items-center gap-2 animate-pulse mt-2">
+                      <AlertCircle size={14} className="shrink-0" />
+                      <span>
+                        <strong>Rate Limit Cooldown:</strong> Groq API 429 error. Cooldown timer active (Exponential Backoff). Retrying automatically...
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Vertical Timeline */}
               <div className="relative border-l border-[#21262d] ml-4 pl-6 space-y-6">
                 {stages.map((stage) => {
@@ -468,8 +530,8 @@ export default function GioiaAnalysis({ cats }) {
                                     Second-Order Theme
                                   </div>
                                   <span className="font-semibold text-xs text-[#bc8cff]">{theme.theme_name}</span>
-                                  <span className="text-[10px] text-[#8b949e] leading-relaxed" title={theme.theme_description}>
-                                    {theme.theme_description}
+                                  <span className="text-[10px] text-[#8b949e] leading-relaxed" title={theme.theme_description || theme.description}>
+                                    {theme.theme_description || theme.description}
                                   </span>
                                 </div>
                               </div>
@@ -511,25 +573,45 @@ export default function GioiaAnalysis({ cats }) {
                   <div key={idx} className="bg-[#0d1117] border border-[#21262d] rounded-lg p-4 flex flex-col justify-between">
                     <div>
                       <h4 className="font-semibold text-sm text-[#bc8cff] mb-1">{theme.theme_name}</h4>
-                      <p className="text-xs text-[#8b949e] leading-relaxed mb-4">{theme.theme_description}</p>
+                      <p className="text-xs text-[#8b949e] leading-relaxed mb-4">{theme.theme_description || theme.description}</p>
                       
                       <div className="border-t border-[#21262d] pt-3 mt-2">
-                        <span className="block text-[10px] font-semibold text-[#8b949e] uppercase tracking-wider mb-2">
-                          MAPPED FIRST-ORDER CODES:
-                        </span>
-                        <div className="space-y-2">
-                          {theme.codes.map((codeItem, cIdx) => {
-                            const codeStr = typeof codeItem === "object" ? codeItem.code : codeItem;
-                            const codeObj = typeof codeItem === "object" ? codeItem : results.first_order.find(fo => fo.code === codeStr);
-                            const docId = codeObj ? (codeObj.chunk_id || codeObj.doc_id || "Unknown") : "Unknown";
-                            return (
-                              <div key={cIdx} className="text-xs text-[#c9d1d9] flex justify-between gap-4 bg-[#161b22]/50 p-2 rounded border border-[#21262d]">
-                                <span>{codeStr}</span>
-                                <span className="font-mono text-[10px] text-[#58a6ff] shrink-0">[{docId}]</span>
-                              </div>
-                            );
-                          })}
-                        </div>
+                        <button
+                          onClick={() => toggleThemeExpand(theme.theme_name)}
+                          className="w-full flex items-center justify-between px-3 py-2 bg-[#161b22] hover:bg-[#1f242c] border border-[#21262d] rounded-lg text-xs text-[#58a6ff] font-medium transition-colors focus:outline-none"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Layers size={12} />
+                            {expandedThemes[theme.theme_name] ? "Hide Evidence & Citations" : "Expand to see Evidence (1st-Order Codes & Citations)"}
+                          </span>
+                          {expandedThemes[theme.theme_name] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
+                        
+                        {expandedThemes[theme.theme_name] && (
+                          <div className="space-y-2.5 mt-3">
+                            {theme.codes.map((codeItem, cIdx) => {
+                              const codeStr = typeof codeItem === "object" ? codeItem.code : codeItem;
+                              const codeObj = typeof codeItem === "object" ? codeItem : results.first_order.find(fo => fo.code === codeStr);
+                              const docId = codeObj ? (codeObj.chunk_id || codeObj.doc_id || "Unknown") : "Unknown";
+                              const quote = codeObj?.key_quote || codeObj?.quote;
+                              return (
+                                <div key={cIdx} className="bg-[#161b22]/40 border border-[#21262d] p-3 rounded-lg flex flex-col gap-2 shadow">
+                                  <div className="flex justify-between items-start gap-4">
+                                    <span className="text-xs font-semibold text-[#c9d1d9]">{codeStr}</span>
+                                    <span className="font-mono text-[10px] text-[#58a6ff] bg-[#58a6ff]/10 px-1.5 py-0.5 rounded border border-[#58a6ff]/20 shrink-0">
+                                      [{docId}]
+                                    </span>
+                                  </div>
+                                  {quote && (
+                                    <div className="text-[11px] text-[#8b949e] italic leading-relaxed border-l-2 border-[#bc8cff]/30 pl-2">
+                                      "{quote}"
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
