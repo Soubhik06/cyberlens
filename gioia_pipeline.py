@@ -477,6 +477,7 @@ def run_intake_agent(research_question):
     victim_sample = sample_evenly_by_date(victim_records, MAX_VICTIM)
     near_miss_sample = sample_evenly_by_date(near_miss_records, MAX_NEAR_MISS)
     
+    final_records = victim_sample + near_miss_sample
     # Deterministic shuffle using a local random generator seeded with the research question
     seed_hash = hashlib.sha256(research_question.encode('utf-8')).hexdigest()
     seed_int = int(seed_hash[:8], 16)
