@@ -1053,3 +1053,10 @@ def serve_react_app(catchall: str):
         content="<h3>Vite+React Frontend build not found!</h3><p>Please run <code>npm run build</code> inside the <code>frontend/</code> directory first.</p>",
         status_code=404
     )
+
+if __name__ == "__main__":
+    import uvicorn
+    # Read the dynamic port assigned by Railway, default to 8000 if not found
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("backend:app", host="0.0.0.0", port=port)
+
