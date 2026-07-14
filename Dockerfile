@@ -33,4 +33,4 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Expose port and start FastAPI using the dynamic Railway port
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn backend:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn backend:app --host 0.0.0.0 --port ${PORT}"]
