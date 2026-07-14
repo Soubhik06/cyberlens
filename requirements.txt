@@ -7,7 +7,7 @@ openpyxl==3.1.5
 plotly==6.5.2
 python-dotenv==1.2.1
 torch==2.3.1
-numpy==2.4.0
+numpy<2.0.0
 tqdm==4.67.1
 groq==1.4.0
 fastapi
