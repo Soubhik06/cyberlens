@@ -15,4 +15,5 @@ uvicorn
 pyngrok
 psutil
 aiohttp
-
+google-api-core
+google-generativeai
