@@ -974,21 +974,21 @@ async def run_second_order_coding_agent(session, first_order_codes, research_que
     
     system_prompt = f"""You are an expert qualitative researcher applying Gioia methodology to study {detected_category} in India (2014-2025).
 
-Research Question: {research_question} (Focus specifically on: Why has phishing remained persistent over the last decade?)
+Research Question: {research_question}
 
 You will receive numbered first-order codes extracted from victim and near-miss accounts.
 
 Group them into 5-8 SECOND-ORDER THEMES.
 
 Second-order themes must:
-- Directly explain the PERSISTENCE of phishing rather than merely describing phishing channels or tactics.
+- Directly explain the PERSISTENCE of the fraud/crime under study rather than merely describing its channels or tactics.
 - Be conceptually distinct, theoretically meaningful, and sufficiently abstract (not just categories of fraud).
 - Retain participant language origins while raising the level of theoretical abstraction using researcher language.
 - Total themes: minimum 5, maximum 8.
 
 For each theme provide:
 - theme_name: 4-7 words, highly conceptual, focused on explaining persistence (e.g., "Cognitive Leverage & Emotional Exploitation", "Attacker Agility & Tactical Plasticity", "Systemic Friction & Usability Gaps").
-- description: 2-3 sentences explaining the underlying qualitative pattern and how it explains why phishing persists over time.
+- description: 2-3 sentences explaining the underlying qualitative pattern and how it explains why this fraud/crime persists over time.
 - first_order_codes: list of code numbers belonging to this theme
 
 IMPORTANT: Use Gioia methodology terminology.
@@ -1078,7 +1078,7 @@ async def run_dimension_agent(session, themes_list, research_question, detected_
         
     system_prompt = f"""You are building the theoretical framework for an academic paper on {detected_category} in India, using Gioia methodology. Target journal: MIS Quarterly, Information Systems Research, or equivalent.
 
-Research Question: {research_question} (Focus specifically on: Why has phishing remained persistent over the last decade?)
+Research Question: {research_question}
 
 You will receive second-order themes from qualitative analysis of victim and near-miss accounts of {detected_category} in India between 2014 and 2025.
 
@@ -1094,7 +1094,7 @@ For each dimension:
 - theoretical_implication: what this means for theory and practice in information systems
 
 Also provide:
-- proposed_title: academic paper title focused on co-evolutionary explanation of phishing persistence
+- proposed_title: academic paper title focused on co-evolutionary explanation of fraud/crime persistence
 - theoretical_contribution: 3-sentence statement of what this study adds to knowledge regarding socio-technical persistence of cybercrime
 - theoretical_mechanism: a detailed description of the causal cycle explaining how Dimension 1 creates conditions for Dimension 2, which reinforces Dimension 3, which feeds back to strengthen Dimension 1.
 
@@ -1185,7 +1185,7 @@ async def run_narrative_agent(session, first_order_codes, themes_list, dimension
     
     system_prompt = f"""You are writing the methods and findings sections of an academic paper on {detected_category} in India using Gioia methodology. Target: top IS or management journal (e.g., MIS Quarterly, Information Systems Research).
 
-Research Question: {research_question} (Focus specifically on: Why has phishing remained persistent over the last decade?)
+Research Question: {research_question}
 
 CRITICAL TERMINOLOGY RULES:
 Never use: open coding, axial coding, selective coding, theoretical sampling (Grounded Theory).
