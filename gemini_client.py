@@ -38,35 +38,37 @@ def is_forbidden_error(e):
 class GeminiKeyRotator:
     def __init__(self):
         self.keys = []
+        main_gemini = os.getenv("GEMINI_API_KEY")
+        if main_gemini:
+            self.keys.append(main_gemini.strip())
+            
         i = 1
         while True:
             key = os.getenv(f"GEMINI_API_KEY_{i}")
             if key:
-                self.keys.append(key.strip())
+                key_stripped = key.strip()
+                if key_stripped not in self.keys:
+                    self.keys.append(key_stripped)
                 i += 1
             else:
                 break
                 
-        if not self.keys:
-            fallback = os.getenv("GEMINI_API_KEY")
-            if fallback:
-                self.keys = [fallback.strip()]
-                
         # Initialize Groq client
         self.groq_keys = []
+        main_groq = os.getenv("GROQ_API_KEY")
+        if main_groq:
+            self.groq_keys.append(main_groq.strip())
+            
         i = 1
         while True:
             key = os.getenv(f"GROQ_API_KEY_{i}")
             if key:
-                self.groq_keys.append(key.strip())
+                key_stripped = key.strip()
+                if key_stripped not in self.groq_keys:
+                    self.groq_keys.append(key_stripped)
                 i += 1
             else:
                 break
-                
-        if not self.groq_keys:
-            fallback = os.getenv("GROQ_API_KEY")
-            if fallback:
-                self.groq_keys = [fallback.strip()]
                 
         if not self.keys and not self.groq_keys:
             raise ValueError("No Gemini or Groq API keys found in environment variables (.env).")
