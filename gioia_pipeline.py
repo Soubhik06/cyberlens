@@ -265,15 +265,80 @@ async def call_groq(session, system_prompt, user_message, model, max_tokens=2000
     return None
 
 
+def clean_llm_json_string(text):
+    # Remove markdown code fences if present
+    text = re.sub(r'^```json\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^```\s*', '', text)
+    text = re.sub(r'\s*```$', '', text)
+    text = text.strip()
+    
+    # Escape raw control characters inside double quotes (like literal newlines and tabs)
+    result = []
+    in_string = False
+    escape = False
+    for char in text:
+        if char == '"' and not escape:
+            in_string = not in_string
+            result.append(char)
+        elif in_string:
+            if char == '\\' and not escape:
+                escape = True
+                result.append(char)
+            else:
+                if escape:
+                    escape = False
+                    result.append(char)
+                else:
+                    if char == '\n':
+                        result.append('\\n')
+                    elif char == '\r':
+                        result.append('\\r')
+                    elif char == '\t':
+                        result.append('\\t')
+                    else:
+                        result.append(char)
+        else:
+            result.append(char)
+            
+    return "".join(result)
+
+def strip_trailing_commas(json_str):
+    json_str = re.sub(r',\s*\]', ']', json_str)
+    json_str = re.sub(r',\s*\}', '}', json_str)
+    return json_str
+
 def extract_json(text):
     if not text:
         return None
-    # Method 1: direct parse
+        
+    cleaned = clean_llm_json_string(text)
+    cleaned = strip_trailing_commas(cleaned)
+    
+    # Method 1: direct parse of cleaned string
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
     except:
         pass
-    # Method 2: find outermost { }
+        
+    # Method 2: find outermost { } in cleaned string
+    try:
+        s = cleaned.find('{')
+        e = cleaned.rfind('}') + 1
+        if s != -1 and e > s:
+            return json.loads(cleaned[s:e])
+    except:
+        pass
+        
+    # Method 3: find outermost [ ] in cleaned string
+    try:
+        s = cleaned.find('[')
+        e = cleaned.rfind(']') + 1
+        if s != -1 and e > s:
+            return json.loads(cleaned[s:e])
+    except:
+        pass
+        
+    # Method 4: fallback to original text find { }
     try:
         s = text.find('{')
         e = text.rfind('}') + 1
@@ -281,14 +346,7 @@ def extract_json(text):
             return json.loads(text[s:e])
     except:
         pass
-    # Method 3: find outermost [ ]
-    try:
-        s = text.find('[')
-        e = text.rfind(']') + 1
-        if s != -1 and e > s:
-            return json.loads(text[s:e])
-    except:
-        pass
+        
     return None
 
 # STAGE 1: INTAKE AGENT (PURE PYTHON)
