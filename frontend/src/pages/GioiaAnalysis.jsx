@@ -8,6 +8,7 @@ import {
 export default function GioiaAnalysis({ cats }) {
   const [question, setQuestion] = useState("");
   const [category, setCategory] = useState("");
+  const [maxRecords, setMaxRecords] = useState(400);
   const [runId, setRunId] = useState(null);
   const [status, setStatus] = useState(null);
   const [results, setResults] = useState(null);
@@ -98,7 +99,8 @@ export default function GioiaAnalysis({ cats }) {
     try {
       const res = await axios.post("/api/gioia/run", {
         research_question: question,
-        fraud_category: category || null
+        fraud_category: category || null,
+        max_records: Number(maxRecords) || 400
       });
       if (res.data.status === "success") {
         startPolling(res.data.run_id);
@@ -267,7 +269,7 @@ export default function GioiaAnalysis({ cats }) {
                 />
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-[#8b949e] uppercase tracking-wider mb-2">
                     Fraud Category Filter (Optional)
@@ -282,6 +284,19 @@ export default function GioiaAnalysis({ cats }) {
                       <option key={idx} value={c}>{c}</option>
                     ))}
                   </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#8b949e] uppercase tracking-wider mb-2">
+                    Max Chunks / Records
+                  </label>
+                  <input
+                    type="number"
+                    value={maxRecords}
+                    onChange={(e) => setMaxRecords(Math.max(10, parseInt(e.target.value) || 0))}
+                    min={10}
+                    max={10000}
+                    className="w-full bg-[#0d1117] border border-[#21262d] rounded-lg p-2.5 text-sm focus:border-[#58a6ff] focus:outline-none transition-colors"
+                  />
                 </div>
                 <div className="flex items-end">
                   <button

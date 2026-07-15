@@ -608,6 +608,7 @@ from gioia_pipeline import GioiaPipeline, generate_run_id
 class GioiaRunRequest(BaseModel):
     research_question: str
     fraud_category: Optional[str] = None
+    max_records: Optional[int] = 400
 
 active_runs = {}
 
@@ -618,7 +619,8 @@ def run_gioia_pipeline(data: GioiaRunRequest):
         pipeline = GioiaPipeline(
             research_question=data.research_question,
             fraud_category=data.fraud_category,
-            run_id=run_id
+            run_id=run_id,
+            max_records=data.max_records or 400
         )
         
         # Save initial metadata
@@ -807,7 +809,8 @@ def resume_gioia_pipeline(run_id: str, stage_number: int):
     pipeline = GioiaPipeline(
         research_question=metadata.get("research_question", ""),
         fraud_category=metadata.get("fraud_category"),
-        run_id=run_id
+        run_id=run_id,
+        max_records=int(metadata.get("max_records", 400))
     )
     
     metadata["status"] = "running"

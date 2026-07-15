@@ -351,7 +351,7 @@ def extract_json(text):
 
 # STAGE 1: INTAKE AGENT (PURE PYTHON)
 
-def run_intake_agent(research_question):
+def run_intake_agent(research_question, max_records=400):
     print("[AGENT 1] Initializing Intake Agent...")
     detected_category = detect_fraud_category(research_question)
     
@@ -532,8 +532,11 @@ def run_intake_agent(research_question):
     victim_records = [r for r in records if r['narrative_type'] == 'VICTIM']
     near_miss_records = [r for r in records if r['narrative_type'] == 'NEAR-MISS']
     
-    victim_sample = sample_evenly_by_date(victim_records, MAX_VICTIM)
-    near_miss_sample = sample_evenly_by_date(near_miss_records, MAX_NEAR_MISS)
+    max_victim = int(max_records * 0.7)
+    max_near_miss = max_records - max_victim
+    
+    victim_sample = sample_evenly_by_date(victim_records, max_victim)
+    near_miss_sample = sample_evenly_by_date(near_miss_records, max_near_miss)
     
     final_records = victim_sample + near_miss_sample
     # Deterministic shuffle using a local random generator seeded with the research question
@@ -1249,9 +1252,10 @@ Respond with ONLY this JSON:
 # COMPATIBILITY CLASS FOR WEB APP (FastAPI)
 
 class GioiaPipeline:
-    def __init__(self, research_question, fraud_category=None, run_id=None):
+    def __init__(self, research_question, fraud_category=None, run_id=None, max_records=400):
         self.research_question = research_question
         self.fraud_category = fraud_category
+        self.max_records = max_records
         
         if run_id:
             self.run_id = run_id
@@ -1270,13 +1274,17 @@ class GioiaPipeline:
         if os.path.exists(self.metadata_path):
             try:
                 with open(self.metadata_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    meta = json.load(f)
+                    if "max_records" in meta:
+                        self.max_records = int(meta["max_records"])
+                    return meta
             except:
                 pass
         return {
             "run_id": self.run_id,
             "research_question": self.research_question,
             "fraud_category": self.fraud_category,
+            "max_records": self.max_records,
             "status": "running",
             "current_stage": 1,
             "updated_at": datetime.datetime.now().isoformat(),
@@ -1442,7 +1450,7 @@ class GioiaPipeline:
                 metadata["current_stage"] = 1
                 self.save_metadata(metadata)
                 
-                chunks = await asyncio.to_thread(run_intake_agent, self.research_question)
+                chunks = await asyncio.to_thread(run_intake_agent, self.research_question, self.max_records)
                 self.save_stage_data(1, chunks)
                 
                 metadata["stats"]["chunks_count"] = len(chunks)
