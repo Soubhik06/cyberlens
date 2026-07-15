@@ -816,10 +816,11 @@ Respond with ONLY a JSON object mapping each record's ID to its coding result, l
                 codes = ["uncategorized qualitative concept"]
                 
             for c in codes:
-                if c.strip():
+                c_str = str(c).strip() if c is not None else ""
+                if c_str:
                     results_list.append({
-                        "code": c.strip(),
-                        "key_quote": key_quote,
+                        "code": c_str,
+                        "key_quote": str(key_quote or "").strip(),
                         "chunk_id": r["id"],
                         "date": r["date"],
                         "narrative_type": r["narrative_type"],
@@ -1079,7 +1080,7 @@ async def run_narrative_agent(session, first_order_codes, themes_list, dimension
     seen_quotes = set()
     for item in first_order_codes:
         code = item.get("code", "")
-        quote = item.get("key_quote", "").strip()
+        quote = str(item.get("key_quote") or "").strip()
         if not quote or quote in seen_quotes:
             continue
         text = item.get("chunk_text", "").lower()
