@@ -796,6 +796,14 @@ def resume_gioia_pipeline(run_id: str, stage_number: int):
     if run_id in active_runs:
         raise HTTPException(status_code=400, detail="Pipeline run is already active.")
         
+    # Clear any previous cancellation flag on resume
+    cancelled_file = os.path.join(output_dir, "cancelled")
+    if os.path.exists(cancelled_file):
+        try:
+            os.remove(cancelled_file)
+        except Exception:
+            pass
+            
     pipeline = GioiaPipeline(
         research_question=metadata.get("research_question", ""),
         fraud_category=metadata.get("fraud_category"),
@@ -821,6 +829,39 @@ def resume_gioia_pipeline(run_id: str, stage_number: int):
     thread.start()
     
     return {"status": "success", "run_id": run_id}
+
+@app.post("/api/gioia/stop/{run_id}")
+def stop_gioia_pipeline(run_id: str):
+    output_dir = os.path.join("gioia_outputs", run_id)
+    if not os.path.exists(output_dir):
+        raise HTTPException(status_code=404, detail="Run directory not found.")
+        
+    # Write cancellation flag file
+    cancelled_file = os.path.join(output_dir, "cancelled")
+    try:
+        with open(cancelled_file, "w", encoding="utf-8") as f:
+            f.write("cancelled")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create cancellation flag: {e}")
+        
+    # Update run metadata immediately to show failed status
+    metadata_path = os.path.join(output_dir, "metadata.json")
+    if os.path.exists(metadata_path):
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            metadata["status"] = "failed"
+            metadata["error"] = "Pipeline stopped by user"
+            metadata["updated_at"] = datetime.datetime.now().isoformat()
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2)
+        except Exception:
+            pass
+            
+    # Clean up from active runs list
+    active_runs.pop(run_id, None)
+    
+    return {"status": "success", "detail": "Stop signal sent to pipeline."}
 
 # --- GIOIA QUERY AGENT Q&A ENDPOINT ---
 

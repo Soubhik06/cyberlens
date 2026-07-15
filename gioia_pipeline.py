@@ -655,6 +655,8 @@ Format example:
         await asyncio.to_thread(save_stage_data_sync, filepath, data)
 
     async def process_sub_batch(session, sub_chunks, attempt_depth=0):
+        if output_dir and os.path.exists(os.path.join(output_dir, "cancelled")):
+            raise ValueError("Pipeline stopped by user")
         if not sub_chunks:
             return []
         
@@ -840,6 +842,8 @@ Respond with ONLY a JSON object mapping each record's ID to its coding result, l
         await asyncio.to_thread(save_stage_data_sync, filepath, data)
 
     async def process_sub_batch(session, sub_chunks, attempt_depth=0):
+        if output_dir and os.path.exists(os.path.join(output_dir, "cancelled")):
+            raise ValueError("Pipeline stopped by user")
         if not sub_chunks:
             return []
         
@@ -1398,7 +1402,12 @@ class GioiaPipeline:
         else:
             return loop.run_until_complete(self.run_async(start_stage))
 
+    def check_cancellation(self):
+        if os.path.exists(os.path.join(self.output_dir, "cancelled")):
+            raise ValueError("Pipeline stopped by user")
+
     async def run_async(self, start_stage=1):
+        self.check_cancellation()
         metadata = self.load_metadata()
         metadata["status"] = "running"
         metadata["error"] = None
@@ -1428,6 +1437,7 @@ class GioiaPipeline:
         try:
             # Stage 1: Intake
             if start_stage <= 1:
+                self.check_cancellation()
                 print(f"[STAGE 1] Running Intake Agent for run {self.run_id}...")
                 metadata["current_stage"] = 1
                 self.save_metadata(metadata)
@@ -1441,6 +1451,7 @@ class GioiaPipeline:
                 
             # Stage 2: Extraction
             if start_stage <= 2:
+                self.check_cancellation()
                 print(f"[STAGE 2] Running Extraction Agent...")
                 metadata["current_stage"] = 2
                 self.save_metadata(metadata)
@@ -1467,6 +1478,7 @@ class GioiaPipeline:
                 
             # Stage 3: First Order Coding
             if start_stage <= 3:
+                self.check_cancellation()
                 print(f"[STAGE 3] Running First Order Coding Agent...")
                 metadata["current_stage"] = 3
                 self.save_metadata(metadata)
@@ -1495,6 +1507,7 @@ class GioiaPipeline:
             async with aiohttp.ClientSession() as session:
                 # Stage 4: Second Order Coding
                 if start_stage <= 4:
+                    self.check_cancellation()
                     print(f"[STAGE 4] Running Second Order Coding Agent...")
                     metadata["current_stage"] = 4
                     self.save_metadata(metadata)
@@ -1512,6 +1525,7 @@ class GioiaPipeline:
                     
                 # Stage 5: Dimension Agent
                 if start_stage <= 5:
+                    self.check_cancellation()
                     print(f"[STAGE 5] Running Dimension Agent...")
                     metadata["current_stage"] = 5
                     self.save_metadata(metadata)
@@ -1539,6 +1553,7 @@ class GioiaPipeline:
                     
                 # Stage 6: Narrative Agent
                 if start_stage <= 6:
+                    self.check_cancellation()
                     print(f"[STAGE 6] Running Narrative Agent...")
                     metadata["current_stage"] = 6
                     self.save_metadata(metadata)

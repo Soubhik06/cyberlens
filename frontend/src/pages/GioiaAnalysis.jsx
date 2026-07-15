@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { 
   Beaker, Play, CheckCircle, AlertCircle, Loader2, Copy, 
-  Download, RefreshCw, ChevronDown, ChevronUp, Layers, BookOpen, Network
+  Download, RefreshCw, ChevronDown, ChevronUp, Layers, BookOpen, Network, AlertOctagon
 } from "lucide-react";
 
 export default function GioiaAnalysis({ cats }) {
@@ -119,6 +119,20 @@ export default function GioiaAnalysis({ cats }) {
     } catch (err) {
       console.error(err);
       alert("Failed to resume analysis stage.");
+    }
+  };
+
+  // Stop run
+  const handleStop = async (id) => {
+    try {
+      const res = await axios.post(`/api/gioia/stop/${id}`);
+      if (res.data.status === "success") {
+        const statusRes = await axios.get(`/api/gioia/status/${id}`);
+        setStatus(statusRes.data);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to stop analysis pipeline.");
     }
   };
 
@@ -297,13 +311,24 @@ export default function GioiaAnalysis({ cats }) {
                 <h3 className="font-semibold text-sm text-[#8b949e] uppercase tracking-wider">
                   Analysis Pipeline Progress (Run: <span className="font-mono text-xs text-[#bc8cff]">{status.run_id}</span>)
                 </h3>
-                <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                  status.status === "complete" ? "bg-[#10b981]/25 text-[#10b981] border border-[#10b981]/50" :
-                  status.status === "failed" ? "bg-[#ff7b72]/25 text-[#ff7b72] border border-[#ff7b72]/50" :
-                  "bg-[#58a6ff]/25 text-[#58a6ff] border border-[#58a6ff]/50 animate-pulse"
-                }`}>
-                  {status.status?.toUpperCase()}
-                </span>
+                <div className="flex items-center gap-2">
+                  {status.status === "running" && (
+                    <button
+                      onClick={() => handleStop(status.run_id)}
+                      className="flex items-center gap-1 px-2.5 py-1 bg-[#ff7b72]/15 hover:bg-[#ff7b72]/25 text-[#ff7b72] border border-[#ff7b72]/30 rounded-lg text-xs font-medium transition-colors focus:outline-none"
+                    >
+                      <AlertOctagon size={13} />
+                      Stop
+                    </button>
+                  )}
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                    status.status === "complete" ? "bg-[#10b981]/25 text-[#10b981] border border-[#10b981]/50" :
+                    status.status === "failed" ? "bg-[#ff7b72]/25 text-[#ff7b72] border border-[#ff7b72]/50" :
+                    "bg-[#58a6ff]/25 text-[#58a6ff] border border-[#58a6ff]/50 animate-pulse"
+                  }`}>
+                    {status.status?.toUpperCase()}
+                  </span>
+                </div>
               </div>
 
               {error && (
