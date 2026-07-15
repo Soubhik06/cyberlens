@@ -909,26 +909,25 @@ async def run_second_order_coding_agent(session, first_order_codes, research_que
     
     system_prompt = f"""You are an expert qualitative researcher applying Gioia methodology to study {detected_category} in India (2014-2025).
 
-Research Question: {research_question}
+Research Question: {research_question} (Focus specifically on: Why has phishing remained persistent over the last decade?)
 
 You will receive numbered first-order codes extracted from victim and near-miss accounts.
 
 Group them into 5-8 SECOND-ORDER THEMES.
 
 Second-order themes must:
-- Be more conceptual than first-order codes
-- Each capture a meaningful pattern across codes
-- Use researcher language (not just data language)
-- Be specific to {detected_category} dynamics
-- Total themes: minimum 5, maximum 8
+- Directly explain the PERSISTENCE of phishing rather than merely describing phishing channels or tactics.
+- Be conceptually distinct, theoretically meaningful, and sufficiently abstract (not just categories of fraud).
+- Retain participant language origins while raising the level of theoretical abstraction using researcher language.
+- Total themes: minimum 5, maximum 8.
 
 For each theme provide:
-- theme_name: 4-7 words, conceptual
-- description: 2-3 sentences explaining the pattern and why it matters for understanding {detected_category}
+- theme_name: 4-7 words, highly conceptual, focused on explaining persistence (e.g., "Cognitive Leverage & Emotional Exploitation", "Attacker Agility & Tactical Plasticity", "Systemic Friction & Usability Gaps").
+- description: 2-3 sentences explaining the underlying qualitative pattern and how it explains why phishing persists over time.
 - first_order_codes: list of code numbers belonging to this theme
 
 IMPORTANT: Use Gioia methodology terminology.
-NEVER use: open coding, axial coding, selective coding (those are Grounded Theory terms).
+NEVER use: open coding, axial coding, selective coding (Grounded Theory).
 ALWAYS use: first-order codes, second-order themes, aggregate dimensions.
 
 Respond with ONLY this JSON, nothing else:
@@ -1014,29 +1013,25 @@ async def run_dimension_agent(session, themes_list, research_question, detected_
         
     system_prompt = f"""You are building the theoretical framework for an academic paper on {detected_category} in India, using Gioia methodology. Target journal: MIS Quarterly, Information Systems Research, or equivalent.
 
-Research Question: {research_question}
+Research Question: {research_question} (Focus specifically on: Why has phishing remained persistent over the last decade?)
 
 You will receive second-order themes from qualitative analysis of victim and near-miss accounts of {detected_category} in India between 2014 and 2025.
 
-Build 2-4 AGGREGATE DIMENSIONS.
-
-Aggregate dimensions must:
-- Represent the highest level of abstraction
-- Be specific to {detected_category} in India
-- Together answer the research question
-- Have clear theoretical implications
-- Be suitable for a top academic journal
+Build exactly 3 AGGREGATE DIMENSIONS representing explanatory constructs:
+1. Cognitive-Tactical Asymmetry (capturing user cognitive fatigue, interface trust bias, real-time urgency, and tactical usability gaps).
+2. Structural-Regulatory Latency (capturing siloed information delay, institutional response speed gap, burner identity registries, and enclave immunity).
+3. Adaptive Feedback Loop (capturing re-investment of fraud revenue, AI-driven template optimization, and defensive shifting of the security burden).
 
 For each dimension:
-- dimension_name: formal academic name (must reference {detected_category} context)
-- theoretical_concept: what theory this dimension contributes to
-- themes_included: list of theme names
-- theoretical_implication: what this means for theory and practice
+- dimension_name: must be one of the three constructs specified above.
+- theoretical_concept: what theory this dimension contributes to (e.g., Protection Motivation Theory, Routine Activity Theory, Co-evolutionary Theory).
+- themes_included: list of theme names mapped to this dimension
+- theoretical_implication: what this means for theory and practice in information systems
 
 Also provide:
-- proposed_title: academic paper title
-- theoretical_contribution: 3-sentence statement of what this study adds to knowledge
-- theoretical_mechanism: how the dimensions relate to each other causally
+- proposed_title: academic paper title focused on co-evolutionary explanation of phishing persistence
+- theoretical_contribution: 3-sentence statement of what this study adds to knowledge regarding socio-technical persistence of cybercrime
+- theoretical_mechanism: a detailed description of the causal cycle explaining how Dimension 1 creates conditions for Dimension 2, which reinforces Dimension 3, which feeds back to strengthen Dimension 1.
 
 Respond with ONLY this JSON:
 {{"aggregate_dimensions": [
@@ -1123,9 +1118,9 @@ async def run_narrative_agent(session, first_order_codes, themes_list, dimension
         } for t in themes_list]
     }
     
-    system_prompt = f"""You are writing the methods and findings sections of an academic paper on {detected_category} in India using Gioia methodology. Target: top IS or management journal.
+    system_prompt = f"""You are writing the methods and findings sections of an academic paper on {detected_category} in India using Gioia methodology. Target: top IS or management journal (e.g., MIS Quarterly, Information Systems Research).
 
-Research Question: {research_question}
+Research Question: {research_question} (Focus specifically on: Why has phishing remained persistent over the last decade?)
 
 CRITICAL TERMINOLOGY RULES:
 Never use: open coding, axial coding, selective coding, theoretical sampling (Grounded Theory).
@@ -1147,26 +1142,28 @@ Write these three outputs:
 1. DATA STRUCTURE TABLE (markdown):
 Three columns:
 First-Order Codes | Second-Order Themes | Aggregate Dimensions
-Show minimum 15 rows, covering all dimensions.
+Show minimum 15 rows, covering all three dimensions. Ensure the codes are participant-centric and the themes are conceptually abstract.
 Each row = one first-order code mapped up.
 
 2. METHODS PARAGRAPH (200 words):
-- State the qualitative Gioia methodology
-- Mention both data sources
+- State the qualitative Gioia methodology (Gioia et al., 2013)
+- Mention both data sources (web scraping and ProQuest)
 - Use EXACT statistics provided above
 - Describe three-level coding procedure using correct Gioia terms only
 - Mention ethical considerations briefly
 
-3. FINDINGS SECTION (500 words):
-- Organize by aggregate dimension
-- For each dimension:
-  * Introduce the dimension theoretically
-  * Describe constituent themes
-  * Include 1-2 direct quotes (cite as: Source, Year, Narrative Type)
-  * Add temporal paragraph starting with 'Temporally,' showing how this dimension evolved across Phase 1/2/3
-- Use formal academic prose
-- No bullet points in narrative
-- Connect dimensions at the end with theoretical mechanism
+3. FINDINGS SECTION (800 words):
+Must be structured exactly into the following sections:
+- **Introduction**: Introduce the research question and summary of findings.
+- **Overview of Data Structure**: Briefly introduce the Gioia dimensions.
+- **Dimension 1: Cognitive-Tactical Asymmetry**: Introduce theoretically, explain constituent themes, include 1-2 representative quotes, and explain the temporal evolution (mechanisms that evolved vs. stayed constant).
+- **Dimension 2: Structural-Regulatory Latency**: Introduce theoretically, explain constituent themes, include 1-2 representative quotes, and explain temporal dynamics.
+- **Dimension 3: Adaptive Feedback Loop**: Introduce theoretically, explain constituent themes, include 1-2 representative quotes, and explain temporal dynamics.
+- **Interaction Between Dimensions**: Explain the causal feedback cycle linking the three dimensions.
+- **Longitudinal Co-evolutionary Analysis**: Identify adaptations of attackers vs. institutional learning over time.
+- **Emergent Theoretical Model & Conclusion**: Integrate Protection Motivation Theory and Routine Activity Theory, introducing the concept of "Co-Evolutionary Defensive Friction" and answering the research question.
+
+Use formal, analytical prose (matching MISQ style, avoiding generic summaries). No bullet points.
 
 Respond with ONLY this JSON:
 {{"data_structure_table": "markdown string",
