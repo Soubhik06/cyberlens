@@ -609,6 +609,7 @@ class GioiaRunRequest(BaseModel):
     research_question: str
     fraud_category: Optional[str] = None
     max_records: Optional[int] = 400
+    filter_category: Optional[bool] = True
 
 active_runs = {}
 
@@ -620,7 +621,8 @@ def run_gioia_pipeline(data: GioiaRunRequest):
             research_question=data.research_question,
             fraud_category=data.fraud_category,
             run_id=run_id,
-            max_records=data.max_records or 400
+            max_records=data.max_records or 400,
+            filter_category=data.filter_category if data.filter_category is not None else True
         )
         
         # Save initial metadata

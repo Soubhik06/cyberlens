@@ -99,7 +99,8 @@ export default function GioiaStandalone({ cats }) {
       const res = await axios.post("/api/gioia/run", {
         research_question: question,
         fraud_category: category || null,
-        max_records: Number(maxRecords) || 500
+        max_records: Number(maxRecords) || 500,
+        filter_category: false
       });
       if (res.data.status === "success") {
         startPolling(res.data.run_id);

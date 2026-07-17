@@ -351,7 +351,7 @@ def extract_json(text):
 
 # STAGE 1: INTAKE AGENT (PURE PYTHON)
 
-def run_intake_agent(research_question, max_records=400):
+def run_intake_agent(research_question, max_records=400, filter_category=True):
     print("[AGENT 1] Initializing Intake Agent...")
     detected_category = detect_fraud_category(research_question)
     
@@ -405,7 +405,7 @@ def run_intake_agent(research_question, max_records=400):
     len_a = len(df_a)
 
     for idx, row in df_a.iterrows():
-        if not row_matches_category(row, detected_category):
+        if filter_category and not row_matches_category(row, detected_category):
             continue
         after_cat += 1
         
@@ -477,7 +477,7 @@ def run_intake_agent(research_question, max_records=400):
         df_b = pd.read_excel(xl, sheet_name=sheet_b)
         len_p = len(df_b)
         for idx, row in df_b.iterrows():
-            if not row_matches_category(row, detected_category):
+            if filter_category and not row_matches_category(row, detected_category):
                 continue
             after_cat += 1
             
@@ -539,13 +539,21 @@ def run_intake_agent(research_question, max_records=400):
     final_records.sort(key=lambda x: x['id'])  # sort back for neat, reproducible order
     
     # Export the selected chunks to selected_500_chunks.csv for verification
+    csv_filename = "selected_500_chunks.csv"
     try:
         df_final = pd.DataFrame(final_records)
         cols_to_save = [c for c in ["id", "source", "date", "title", "narrative_type", "text"] if c in df_final.columns]
-        df_final[cols_to_save].to_csv("selected_500_chunks.csv", index=False, encoding="utf-8")
-        print(f"[AGENT 1] Successfully exported {len(final_records)} selected chunks to selected_500_chunks.csv")
+        df_final[cols_to_save].to_csv(csv_filename, index=False, encoding="utf-8")
+        print(f"[AGENT 1] Successfully exported {len(final_records)} selected chunks to {csv_filename}")
     except Exception as csv_err:
-        print(f"[AGENT 1 WARNING] Could not write selected_500_chunks.csv: {csv_err}")
+        print(f"[AGENT 1 WARNING] Could not write {csv_filename} (file might be locked/open in Excel): {csv_err}")
+        # Try fallback name
+        fallback_filename = "selected_500_chunks_fallback.csv"
+        try:
+            df_final[cols_to_save].to_csv(fallback_filename, index=False, encoding="utf-8")
+            print(f"[AGENT 1] Successfully saved fallback copy to {fallback_filename}")
+        except Exception as fb_err:
+            print(f"[AGENT 1 ERROR] Fallback save failed: {fb_err}")
         
     web_count = sum(1 for r in final_records if r["source"] == "web_scraping")
     pq_count = sum(1 for r in final_records if r["source"] == "proquest")
@@ -1259,10 +1267,11 @@ Respond with ONLY this JSON:
 # COMPATIBILITY CLASS FOR WEB APP (FastAPI)
 
 class GioiaPipeline:
-    def __init__(self, research_question, fraud_category=None, run_id=None, max_records=400):
+    def __init__(self, research_question, fraud_category=None, run_id=None, max_records=400, filter_category=True):
         self.research_question = research_question
         self.fraud_category = fraud_category
         self.max_records = max_records
+        self.filter_category = filter_category
         
         if run_id:
             self.run_id = run_id
@@ -1284,6 +1293,8 @@ class GioiaPipeline:
                     meta = json.load(f)
                     if "max_records" in meta:
                         self.max_records = int(meta["max_records"])
+                    if "filter_category" in meta:
+                        self.filter_category = bool(meta["filter_category"])
                     return meta
             except:
                 pass
@@ -1292,6 +1303,7 @@ class GioiaPipeline:
             "research_question": self.research_question,
             "fraud_category": self.fraud_category,
             "max_records": self.max_records,
+            "filter_category": self.filter_category,
             "status": "running",
             "current_stage": 1,
             "updated_at": datetime.datetime.now().isoformat(),
@@ -1457,7 +1469,7 @@ class GioiaPipeline:
                 metadata["current_stage"] = 1
                 self.save_metadata(metadata)
                 
-                chunks = await asyncio.to_thread(run_intake_agent, self.research_question, self.max_records)
+                chunks = await asyncio.to_thread(run_intake_agent, self.research_question, self.max_records, self.filter_category)
                 self.save_stage_data(1, chunks)
                 
                 metadata["stats"]["chunks_count"] = len(chunks)
@@ -1664,11 +1676,15 @@ def main():
     parser = argparse.ArgumentParser(description="Run Gioia Qualitative Research Pipeline")
     parser.add_argument("--question", type=str, required=True, help="The research question")
     parser.add_argument("--run_id", type=str, required=True, help="Unique identifier for the run")
+    parser.add_argument("--max_records", type=int, default=400, help="Max records/chunks to intake")
+    parser.add_argument("--no_filter", action="store_true", help="Disable category filtering during intake")
     args = parser.parse_args()
     
     pipeline = GioiaPipeline(
         research_question=args.question,
-        run_id=args.run_id
+        run_id=args.run_id,
+        max_records=args.max_records,
+        filter_category=not args.no_filter
     )
     pipeline.run()
 
