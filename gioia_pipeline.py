@@ -394,6 +394,7 @@ def run_intake_agent(research_question, max_records=400):
     after_type = 0
     victim_count = 0
     near_miss_count = 0
+    third_party_count = 0
     after_date = 0
 
     # --- Load Stream A ---
@@ -410,13 +411,15 @@ def run_intake_agent(research_question, max_records=400):
         
         raw_type = row.get("Narrative Type", "")
         normalized_type = normalize_narrative_type(raw_type)
-        if normalized_type not in ("VICTIM", "NEAR-MISS"):
+        if normalized_type not in ("VICTIM", "NEAR-MISS", "THIRD-PARTY"):
             continue
         after_type += 1
         if normalized_type == "VICTIM":
             victim_count += 1
-        else:
+        elif normalized_type == "NEAR-MISS":
             near_miss_count += 1
+        else:
+            third_party_count += 1
             
         raw_date = row.get("Original Date")
         parsed_dt = parse_date_safe(raw_date)
@@ -480,13 +483,15 @@ def run_intake_agent(research_question, max_records=400):
             
             raw_type = row.get("Narrative Type", "")
             normalized_type = normalize_narrative_type(raw_type)
-            if normalized_type not in ("VICTIM", "NEAR-MISS"):
+            if normalized_type not in ("VICTIM", "NEAR-MISS", "THIRD-PARTY"):
                 continue
             after_type += 1
             if normalized_type == "VICTIM":
                 victim_count += 1
-            else:
+            elif normalized_type == "NEAR-MISS":
                 near_miss_count += 1
+            else:
+                third_party_count += 1
                 
             raw_date = row.get("Original Date")
             parsed_dt = parse_date_safe(raw_date)
@@ -517,37 +522,37 @@ def run_intake_agent(research_question, max_records=400):
             })
 
     # --- Smart Sampling ---
-    def sample_evenly_by_date(records_list, max_count):
-        if len(records_list) <= max_count:
-            return records_list
-        dated = [r for r in records_list if r['year'] is not None]
-        undated = [r for r in records_list if r['year'] is None]
-        dated.sort(key=lambda x: x['date'])
-        step = max(1, len(dated) // max_count)
-        sampled = dated[::step][:max_count]
-        if len(sampled) < max_count:
-            sampled += undated[:max_count - len(sampled)]
-        return sampled
-
-    victim_records = [r for r in records if r['narrative_type'] == 'VICTIM']
-    near_miss_records = [r for r in records if r['narrative_type'] == 'NEAR-MISS']
+    # Combine all valid narrative types: VICTIM, NEAR-MISS, and THIRD-PARTY
+    matching_records = [r for r in records if r['narrative_type'] in ('VICTIM', 'NEAR-MISS', 'THIRD-PARTY')]
+    matching_records.sort(key=lambda x: x['id'])  # sort first for deterministic stability
     
-    max_victim = int(max_records * 0.7)
-    max_near_miss = max_records - max_victim
-    
-    victim_sample = sample_evenly_by_date(victim_records, max_victim)
-    near_miss_sample = sample_evenly_by_date(near_miss_records, max_near_miss)
-    
-    final_records = victim_sample + near_miss_sample
-    # Deterministic shuffle using a local random generator seeded with the research question
+    # Deterministic sample using a local random generator seeded with the research question
     seed_hash = hashlib.sha256(research_question.encode('utf-8')).hexdigest()
     seed_int = int(seed_hash[:8], 16)
     local_rng = random.Random(seed_int)
-    local_rng.shuffle(final_records)
-
     
+    if len(matching_records) > max_records:
+        final_records = local_rng.sample(matching_records, max_records)
+    else:
+        final_records = matching_records
+        
+    final_records.sort(key=lambda x: x['id'])  # sort back for neat, reproducible order
+    
+    # Export the selected chunks to selected_500_chunks.csv for verification
+    try:
+        df_final = pd.DataFrame(final_records)
+        cols_to_save = [c for c in ["id", "source", "date", "title", "narrative_type", "text"] if c in df_final.columns]
+        df_final[cols_to_save].to_csv("selected_500_chunks.csv", index=False, encoding="utf-8")
+        print(f"[AGENT 1] Successfully exported {len(final_records)} selected chunks to selected_500_chunks.csv")
+    except Exception as csv_err:
+        print(f"[AGENT 1 WARNING] Could not write selected_500_chunks.csv: {csv_err}")
+        
     web_count = sum(1 for r in final_records if r["source"] == "web_scraping")
     pq_count = sum(1 for r in final_records if r["source"] == "proquest")
+    
+    final_victim = sum(1 for r in final_records if r["narrative_type"] == "VICTIM")
+    final_near_miss = sum(1 for r in final_records if r["narrative_type"] == "NEAR-MISS")
+    final_third_party = sum(1 for r in final_records if r["narrative_type"] == "THIRD-PARTY")
     
     # Summary Output
     print(f"\n========== AGENT 1 SUMMARY ==========")
@@ -560,11 +565,13 @@ def run_intake_agent(research_question, max_records=400):
     print(f"After type filter:      {after_type}")
     print(f"  - VICTIM:             {victim_count}")
     print(f"  - NEAR-MISS:          {near_miss_count}")
+    print(f"  - THIRD-PARTY:        {third_party_count}")
     print(f"After date validation:  {after_date}")
     print(f"-------------------------------------")
     print(f"Final sample:           {len(final_records)}")
-    print(f"  - VICTIM:             {len(victim_sample)}")
-    print(f"  - NEAR-MISS:          {len(near_miss_sample)}")
+    print(f"  - VICTIM:             {final_victim}")
+    print(f"  - NEAR-MISS:          {final_near_miss}")
+    print(f"  - THIRD-PARTY:        {final_third_party}")
     print(f"  - From web scraping:  {web_count}")
     print(f"  - From ProQuest:      {pq_count}")
     print(f"======================================\n")
