@@ -866,6 +866,19 @@ def stop_gioia_pipeline(run_id: str):
     
     return {"status": "success", "detail": "Stop signal sent to pipeline."}
 
+@app.get("/api/gioia/chunks/{run_id}")
+def get_gioia_chunks(run_id: str):
+    output_dir = os.path.join("gioia_outputs", run_id)
+    stage1_file = os.path.join(output_dir, "stage1_data.json")
+    if not os.path.exists(stage1_file):
+        raise HTTPException(status_code=404, detail="Intake chunks not found. Stage 1 must complete first.")
+    try:
+        with open(stage1_file, "r", encoding="utf-8") as f:
+            chunks = json.load(f)
+        return chunks
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- GIOIA QUERY AGENT Q&A ENDPOINT ---
 
 class GioiaQueryRequest(BaseModel):

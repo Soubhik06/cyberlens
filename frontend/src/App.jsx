@@ -6,6 +6,7 @@ import Insights from "./pages/Insights";
 import Explorer from "./pages/Explorer";
 import Submit from "./pages/Submit";
 import GioiaAnalysis from "./pages/GioiaAnalysis";
+import GioiaStandalone from "./pages/GioiaStandalone";
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState("submit");
@@ -75,6 +76,10 @@ export default function App() {
   const sortedUnique = (arr) => {
     return Array.from(new Set(arr.filter(Boolean))).sort();
   };
+
+  if (window.location.pathname === "/gioia-standalone") {
+    return <GioiaStandalone cats={cats || []} />;
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-darkBg text-textMain">
