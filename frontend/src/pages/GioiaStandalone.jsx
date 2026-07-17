@@ -22,9 +22,35 @@ export default function GioiaStandalone({ cats }) {
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [selectedChunk, setSelectedChunk] = useState(null);
 
+  // Q&A Agent box states
+  const [queryQuestion, setQueryQuestion] = useState("");
+  const [queryAnswer, setQueryAnswer] = useState("");
+  const [queryLoading, setQueryLoading] = useState(false);
+  const [queryWorkflow, setQueryWorkflow] = useState(null);
+  const [queryError, setQueryError] = useState(null);
+
+  // Expansion panel states
+  const [expandedPanels, setExpandedPanels] = useState({
+    structure: true,
+    themes: false,
+    dimensions: false,
+    findings: true,
+    query: true
+  });
+  
+  const [expandedThemes, setExpandedThemes] = useState({});
+
+  const togglePanel = (panel) => {
+    setExpandedPanels(prev => ({ ...prev, [panel]: !prev[panel] }));
+  };
+
+  const toggleThemeExpand = (themeName) => {
+    setExpandedThemes(prev => ({ ...prev, [themeName]: !prev[themeName] }));
+  };
+
   const pollInterval = useRef(null);
 
-  // Fetch past runs/checkpoints
+  // Fetch checkpoints
   const fetchCheckpoints = async () => {
     try {
       const res = await axios.get("/api/gioia/checkpoints");
@@ -95,12 +121,15 @@ export default function GioiaStandalone({ cats }) {
     setStatus(null);
     setChunks([]);
     setError(null);
+    setQueryAnswer("");
+    setQueryWorkflow(null);
+    
     try {
       const res = await axios.post("/api/gioia/run", {
         research_question: question,
         fraud_category: category || null,
         max_records: Number(maxRecords) || 500,
-        filter_category: false
+        filter_category: false  // Disable strict category filtering for standalone evaluation
       });
       if (res.data.status === "success") {
         startPolling(res.data.run_id);
@@ -158,6 +187,8 @@ export default function GioiaStandalone({ cats }) {
     setError(null);
     setResults(null);
     setChunks([]);
+    setQueryAnswer("");
+    setQueryWorkflow(null);
     
     if (chk.status === "complete") {
       fetchResults(chk.run_id);
@@ -168,6 +199,60 @@ export default function GioiaStandalone({ cats }) {
         startPolling(chk.run_id);
       }
     }
+  };
+
+  // Query Q&A Agent method
+  const handleQueryAgent = async () => {
+    if (!queryQuestion.trim()) {
+      alert("Please enter a question.");
+      return;
+    }
+    setQueryLoading(true);
+    setQueryAnswer("");
+    setQueryWorkflow(null);
+    setQueryError(null);
+    
+    try {
+      const res = await axios.post("/api/gioia/query", {
+        run_id: runId,
+        question: queryQuestion
+      });
+      setQueryAnswer(res.data.answer);
+      setQueryWorkflow(res.data.workflow);
+    } catch (err) {
+      console.error(err);
+      setQueryError(err.response?.data?.detail || "Failed to query the Gioia agent.");
+    } finally {
+      setQueryLoading(false);
+    }
+  };
+
+  // Copy narrative to clipboard
+  const handleCopyNarrative = () => {
+    if (!results?.narrative) return;
+    const text = typeof results.narrative === "string" ? results.narrative : 
+      `${results.narrative?.methods_paragraph || ""}\n\n${results.narrative?.findings_section || ""}`;
+    navigator.clipboard.writeText(text);
+    alert("Scholarly narrative copied to clipboard!");
+  };
+
+  // Download findings narrative as doc file
+  const handleDownloadDoc = () => {
+    if (!results?.narrative) return;
+    const text = typeof results.narrative === "string" ? results.narrative : 
+      `${results.narrative?.methods_paragraph || ""}\n\n${results.narrative?.findings_section || ""}`;
+    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><title>Gioia Analysis Research Findings</title><style>body { font-family: 'Times New Roman', serif; line-height: 1.6; padding: 20px; }</style></head><body>";
+    const footer = "</body></html>";
+    const paragraphs = text.split("\n\n").map(p => `<p>${p.replace(/\n/g, "<br/>")}</p>`).join("");
+    const html = header + paragraphs + footer;
+    const blob = new Blob(['\ufeff' + html], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gioia_findings_${runId}.doc`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const filteredChunks = chunks.filter(c => {
@@ -490,83 +575,358 @@ export default function GioiaStandalone({ cats }) {
         </div>
       )}
 
-      {/* PANEL 4: ACADEMIC FINDINGS & RESULTS DISPLAY */}
+      {/* PANEL 4: ACADEMIC FINDINGS & RESULTS DISPLAY (MATCHING FULL GIOIA AGENT PATTERN) */}
       {results && (
-        <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-6 shadow-lg mb-8">
-          <div className="flex justify-between items-center mb-6 border-b border-[#21262d] pb-4">
-            <div>
-              <h2 className="text-xl font-bold text-[#58a6ff] flex items-center gap-2">
-                <BookOpen size={22} /> Gioia Analytical Findings & Theory Construction
-              </h2>
-              <p className="text-xs text-[#8b949e] mt-1">
-                Completed qualitative mapping and scholarly theory draft for the 500 chunks.
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                const resultsStr = JSON.stringify(results, null, 2);
-                navigator.clipboard.writeText(resultsStr);
-                alert("Results copied to clipboard.");
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] rounded-lg text-xs transition-colors"
-            >
-              <Copy size={13} /> Copy Results JSON
-            </button>
+        <div className="space-y-6">
+          <div className="pb-2 border-b border-[#21262d]">
+            <h2 className="text-xl font-semibold text-[#bc8cff] flex items-center gap-2">
+              <Network size={20} /> Qualitative Coding Results & Theoretical Dimensions
+            </h2>
           </div>
 
-          <div className="space-y-8">
-            {/* Theoretical Dimensions Mapping */}
-            <div>
-              <h3 className="text-sm font-semibold text-[#8b949e] uppercase tracking-wider mb-4">
-                1. 2nd-Order Themes & Aggregate Dimensions Mapping
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {results.aggregate_dimensions?.aggregate_dimensions?.map((dim, idx) => (
-                  <div key={idx} className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5 shadow-inner">
-                    <div className="flex items-start justify-between gap-2 mb-3">
-                      <h4 className="font-bold text-sm text-[#bc8cff]">{dim.dimension_name}</h4>
-                      <span className="text-[10px] bg-[#21262d] px-2 py-0.5 rounded text-[#8b949e] font-mono">
-                        Concept: {dim.theoretical_concept}
-                      </span>
-                    </div>
-                    
-                    <label className="block text-[10px] font-semibold text-[#8b949e] uppercase tracking-wider mb-1">
-                      Mapped Themes ({dim.themes_included?.length || 0})
-                    </label>
-                    <ul className="space-y-1 mb-4 text-xs">
-                      {dim.themes_included?.map((theme, i) => (
-                        <li key={i} className="text-[#c9d1d9] flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#58a6ff]"></span>
-                          {theme}
-                        </li>
-                      ))}
-                    </ul>
+          {/* Panel 1 — Data Structure (Visual Tree Layout) */}
+          <div className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden shadow-lg">
+            <button
+              onClick={() => togglePanel("structure")}
+              className="w-full flex items-center justify-between p-4 bg-[#1f242c]/50 hover:bg-[#1f242c] transition-colors"
+            >
+              <span className="font-semibold text-sm text-[#58a6ff] flex items-center gap-2">
+                <Network size={16} /> Panel 1 — Visual Coding Structure (First Order &rarr; Themes &rarr; Dimensions)
+              </span>
+              {expandedPanels.structure ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </button>
+            {expandedPanels.structure && (
+              <div className="p-5 overflow-x-auto bg-[#0d1117]/50">
+                <div className="min-w-[700px] flex flex-col gap-4">
+                  {results.dimensions?.map((dim, dIdx) => {
+                    const dimThemes = results.second_order?.filter(t => dim.themes.includes(t.theme_name)) || [];
+                    return (
+                      <div key={dIdx} className="border border-[#21262d] bg-[#111622]/40 rounded-xl flex flex-col md:flex-row shadow">
+                        
+                        {/* Codes & Themes Column */}
+                        <div className="flex-1 flex flex-col border-r border-[#21262d]">
+                          {dimThemes.map((theme, tIdx) => (
+                            <div key={tIdx} className="flex border-b border-[#21262d] last:border-b-0">
+                              {/* Codes sub-column */}
+                              <div className="flex-1 p-4 flex flex-col gap-2 bg-[#0d1117]/30 border-r border-[#21262d]">
+                                <div className="text-[10px] text-[#8b949e] font-semibold mb-1 uppercase tracking-wider">
+                                  First-Order Concepts
+                                </div>
+                                {theme.codes?.map((codeItem, cIdx) => {
+                                  const codeStr = typeof codeItem === "object" ? codeItem.code : codeItem;
+                                  return (
+                                    <div key={cIdx} className="bg-[#161b22] border border-[#21262d] p-2 rounded-lg text-[11px] leading-relaxed text-[#c9d1d9] hover:border-[#58a6ff]/40 transition-colors">
+                                      {codeStr}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              
+                              {/* Theme Column */}
+                              <div className="w-72 p-4 bg-[#161b22]/10 flex flex-col justify-center gap-2">
+                                <div className="text-[10px] text-[#8b949e] font-semibold uppercase tracking-wider">
+                                  Second-Order Theme
+                                </div>
+                                <span className="font-semibold text-xs text-[#bc8cff]">{theme.theme_name}</span>
+                                <span className="text-[10px] text-[#8b949e] leading-relaxed">
+                                  {theme.theme_description || theme.description}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        
+                        {/* Dimension Column */}
+                        <div className="w-80 p-5 bg-[#58a6ff]/5 flex flex-col justify-center border-l border-[#21262d] md:border-l-0">
+                          <div className="text-[10px] text-[#8b949e] font-semibold mb-1 uppercase tracking-wider">
+                            Aggregate Dimension
+                          </div>
+                          <div className="text-[#58a6ff] font-bold text-sm mb-2">{dim.dimension_name}</div>
+                          <p className="text-xs text-[#8b949e] leading-relaxed">{dim.theoretical_explanation}</p>
+                        </div>
+                        
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
 
-                    <label className="block text-[10px] font-semibold text-[#8b949e] uppercase tracking-wider mb-1">
-                      Theoretical Practice Implication
-                    </label>
-                    <p className="text-xs text-[#8b949e] italic leading-relaxed">{dim.theoretical_implication}</p>
+          {/* Panel 2 — Themes Explorer */}
+          <div className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden shadow-lg">
+            <button
+              onClick={() => togglePanel("themes")}
+              className="w-full flex items-center justify-between p-4 bg-[#1f242c]/50 hover:bg-[#1f242c] transition-colors"
+            >
+              <span className="font-semibold text-sm text-[#58a6ff] flex items-center gap-2">
+                <Layers size={16} /> Panel 2 — Second Order Themes Explorer (with Evidence)
+              </span>
+              {expandedPanels.themes ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </button>
+            {expandedPanels.themes && (
+              <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {results.second_order?.map((theme, idx) => (
+                  <div key={idx} className="bg-[#0d1117] border border-[#21262d] rounded-lg p-4 flex flex-col justify-between">
+                    <div>
+                      <h4 className="font-semibold text-sm text-[#bc8cff] mb-1">{theme.theme_name}</h4>
+                      <p className="text-xs text-[#8b949e] leading-relaxed mb-4">{theme.theme_description || theme.description}</p>
+                      
+                      <div className="border-t border-[#21262d] pt-3 mt-2">
+                        <button
+                          onClick={() => toggleThemeExpand(theme.theme_name)}
+                          className="w-full flex items-center justify-between px-3 py-2 bg-[#161b22] hover:bg-[#1f242c] border border-[#21262d] rounded-lg text-xs text-[#58a6ff] font-medium transition-colors focus:outline-none"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Layers size={12} />
+                            {expandedThemes[theme.theme_name] ? "Hide Evidence & Citations" : "Expand to see Evidence (1st-Order Codes & Citations)"}
+                          </span>
+                          {expandedThemes[theme.theme_name] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
+                        
+                        {expandedThemes[theme.theme_name] && (
+                          <div className="space-y-2.5 mt-3">
+                            {theme.codes?.map((codeItem, cIdx) => {
+                              const codeStr = typeof codeItem === "object" ? codeItem.code : codeItem;
+                              const codeObj = typeof codeItem === "object" ? codeItem : results.first_order?.find(fo => fo.code === codeStr);
+                              const docId = codeObj ? (codeObj.chunk_id || codeObj.doc_id || "Unknown") : "Unknown";
+                              const quote = codeObj?.key_quote || codeObj?.quote;
+                              return (
+                                <div key={cIdx} className="bg-[#161b22]/40 border border-[#21262d] p-3 rounded-lg flex flex-col gap-2 shadow">
+                                  <div className="flex justify-between items-start gap-4">
+                                    <span className="text-xs font-semibold text-[#c9d1d9]">{codeStr}</span>
+                                    <span className="font-mono text-[10px] text-[#58a6ff] bg-[#58a6ff]/10 px-1.5 py-0.5 rounded border border-[#58a6ff]/20 shrink-0">
+                                      [{docId}]
+                                    </span>
+                                  </div>
+                                  {quote && (
+                                    <div className="text-[11px] text-[#8b949e] italic leading-relaxed border-l-2 border-[#bc8cff]/30 pl-2">
+                                      "{quote}"
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
-            </div>
+            )}
+          </div>
 
-            {/* Scholarly Narrative Section */}
-            <div>
-              <h3 className="text-sm font-semibold text-[#8b949e] uppercase tracking-wider mb-3">
-                2. MISQ-Expected Methods and Findings Paper Draft
-              </h3>
-              <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-6 shadow-inner font-serif text-sm text-[#c9d1d9] leading-relaxed space-y-6 max-h-[600px] overflow-y-auto">
-                <div>
-                  <h4 className="font-sans font-bold text-xs uppercase tracking-wider text-[#58a6ff] mb-2">Research Methodology</h4>
-                  <p className="whitespace-pre-line">{results.narrative?.methods_paragraph}</p>
+          {/* Panel 3 — Dimensions */}
+          <div className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden shadow-lg">
+            <button
+              onClick={() => togglePanel("dimensions")}
+              className="w-full flex items-center justify-between p-4 bg-[#1f242c]/50 hover:bg-[#1f242c] transition-colors"
+            >
+              <span className="font-semibold text-sm text-[#58a6ff] flex items-center gap-2">
+                <Network size={16} /> Panel 3 — Aggregate Dimensions & Theoretical Explanation
+              </span>
+              {expandedPanels.dimensions ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </button>
+            {expandedPanels.dimensions && (
+              <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {results.dimensions?.map((dim, idx) => (
+                  <div key={idx} className="bg-[#0d1117] border border-[#21262d] rounded-lg p-4 flex flex-col justify-between">
+                    <div>
+                      <h4 className="font-bold text-sm text-[#58a6ff] mb-2">{dim.dimension_name}</h4>
+                      <p className="text-xs text-[#c9d1d9] leading-relaxed mb-4 italic">{dim.theoretical_explanation}</p>
+                      
+                      <div className="border-t border-[#21262d] pt-3">
+                        <span className="block text-[10px] font-semibold text-[#8b949e] uppercase tracking-wider mb-2">
+                          Themes in this Dimension:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {dim.themes?.map((tName, tIdx) => (
+                            <span key={tIdx} className="bg-[#bc8cff]/10 border border-[#bc8cff]/30 text-[#bc8cff] text-[10px] px-2 py-1 rounded">
+                              {tName}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Panel 4 — Research Findings (Narrative) */}
+          <div className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden shadow-lg">
+            <button
+              onClick={() => togglePanel("findings")}
+              className="w-full flex items-center justify-between p-4 bg-[#1f242c]/50 hover:bg-[#1f242c] transition-colors"
+            >
+              <span className="font-semibold text-sm text-[#58a6ff] flex items-center gap-2">
+                <BookOpen size={16} /> Panel 4 — Scholarly Findings Narrative
+              </span>
+              {expandedPanels.findings ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </button>
+            {expandedPanels.findings && (
+              <div className="p-6 bg-[#0d1117]">
+                <div className="flex justify-end gap-2 mb-4">
+                  <button
+                    onClick={handleCopyNarrative}
+                    className="text-xs bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] border border-[#30363d] rounded px-3 py-1.5 flex items-center gap-1.5 transition-colors"
+                  >
+                    <Copy size={14} /> Copy to Clipboard
+                  </button>
+                  <button
+                    onClick={handleDownloadDoc}
+                    className="text-xs bg-[#58a6ff]/20 hover:bg-[#58a6ff]/30 text-[#58a6ff] border border-[#58a6ff]/40 rounded px-3 py-1.5 flex items-center gap-1.5 transition-colors"
+                  >
+                    <Download size={14} /> Download as Word Document
+                  </button>
                 </div>
-                <div>
-                  <h4 className="font-sans font-bold text-xs uppercase tracking-wider text-[#58a6ff] mb-2">Qualitative Findings</h4>
-                  <p className="whitespace-pre-line">{results.narrative?.findings_section}</p>
+                <div className="prose max-w-none text-[#c9d1d9] text-sm leading-relaxed space-y-4 font-serif">
+                  {(typeof results.narrative === "string" ? results.narrative : 
+                    `${results.narrative?.methods_paragraph || ""}\n\n${results.narrative?.findings_section || ""}`
+                  ).split("\n\n").map((para, idx) => (
+                    <p key={idx} className="indent-8 text-justify">
+                      {para}
+                    </p>
+                  ))}
                 </div>
               </div>
-            </div>
+            )}
+          </div>
+          
+          {/* Panel 5 — Query Gioia Agent (Q&A) */}
+          <div className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden shadow-lg mt-6">
+            <button
+              onClick={() => togglePanel("query")}
+              className="w-full flex items-center justify-between p-4 bg-[#1f242c]/50 hover:bg-[#1f242c] transition-colors"
+            >
+              <span className="font-semibold text-sm text-[#58a6ff] flex items-center gap-2">
+                <Beaker size={16} /> Panel 5 — Query Gioia Standalone Agent (Interactive Q&A & Workflow Trace)
+              </span>
+              {expandedPanels.query ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </button>
+            {expandedPanels.query && (
+              <div className="p-6 bg-[#0d1117]/30 space-y-6">
+                <div>
+                  <label className="block text-xs font-semibold text-[#8b949e] uppercase tracking-wider mb-2">
+                    Ask the Gioia Qualitative Research Agent a Question
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={queryQuestion}
+                      onChange={(e) => setQueryQuestion(e.target.value)}
+                      placeholder="Ask about victim profiles, coercion tactics, recovery, or policy gaps..."
+                      className="flex-1 bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2.5 text-sm focus:border-[#58a6ff] focus:outline-none transition-colors text-white"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleQueryAgent();
+                      }}
+                    />
+                    <button
+                      onClick={handleQueryAgent}
+                      disabled={queryLoading}
+                      className="bg-[#58a6ff] hover:bg-[#478ed9] text-[#0d1117] font-semibold px-6 py-2.5 rounded-lg text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {queryLoading ? (
+                        <>
+                          <Loader2 className="animate-spin" size={16} /> Querying...
+                        </>
+                      ) : (
+                        "Query"
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {queryError && (
+                  <div className="bg-[#ff7b72]/10 border border-[#ff7b72]/30 rounded-lg p-3 text-xs text-[#ff7b72] flex items-center gap-2">
+                    <AlertCircle size={16} />
+                    <div>{queryError}</div>
+                  </div>
+                )}
+
+                {queryAnswer && (
+                  <div className="space-y-6">
+                    {/* Workflow Trace */}
+                    {queryWorkflow && (
+                      <div className="border border-[#21262d] rounded-xl p-4 bg-[#161b22]/40 space-y-4">
+                        <h4 className="text-xs font-bold text-[#8b949e] uppercase tracking-wider flex items-center gap-2">
+                          <Network size={14} /> Agent Reasoning Trace Workflow
+                        </h4>
+                        
+                        <div className="space-y-4 border-l border-[#21262d] ml-2 pl-4">
+                          {/* Step 1: Retrieve Codes */}
+                          <div>
+                            <span className="text-xs font-semibold text-[#58a6ff] block mb-2">
+                              Step 1: Retrieved Key Qualitative Concepts & Quotes
+                            </span>
+                            <div className="space-y-2">
+                              {queryWorkflow.retrieved_codes?.map((item, idx) => (
+                                <div key={idx} className="bg-[#0d1117] border border-[#21262d] p-3 rounded-lg text-xs">
+                                  <div className="flex justify-between items-center mb-1 text-[10px] text-[#8b949e]">
+                                    <span className="font-semibold text-[#bc8cff]">Concept: {item.code}</span>
+                                    <span className="font-mono text-[9px] text-[#58a6ff]">[{item.source} | {item.date}]</span>
+                                  </div>
+                                  <p className="italic text-[#c9d1d9] mt-1 leading-relaxed">
+                                    "{item.quote}"
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Step 2: Map to Themes */}
+                          <div>
+                            <span className="text-xs font-semibold text-[#bc8cff] block mb-2">
+                              Step 2: Mapped to Conceptual Themes
+                            </span>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              {queryWorkflow.mapped_themes?.map((item, idx) => (
+                                <div key={idx} className="bg-[#0d1117] border border-[#21262d] p-3 rounded-lg text-xs">
+                                  <div className="font-bold text-[#bc8cff] mb-1">{item.name}</div>
+                                  <p className="text-[#8b949e] leading-relaxed">{item.description}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Step 3: Map to Aggregate Dimensions */}
+                          <div>
+                            <span className="text-xs font-semibold text-[#10b981] block mb-2">
+                              Step 3: Mapped to Aggregate Theoretical Dimensions
+                            </span>
+                            <div className="space-y-2">
+                              {queryWorkflow.mapped_dimensions?.map((item, idx) => (
+                                <div key={idx} className="bg-[#0d1117] border border-[#21262d] p-3 rounded-lg text-xs">
+                                  <div className="font-bold text-[#10b981] mb-1">{item.dimension_name}</div>
+                                  <div className="text-[#c9d1d9]"><span className="text-[#8b949e] font-semibold">Theoretical Concept:</span> {item.theoretical_concept}</div>
+                                  <div className="text-[#c9d1d9] mt-0.5"><span className="text-[#8b949e] font-semibold">Theoretical Implication:</span> {item.theoretical_implication}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Agent Response */}
+                    <div className="bg-[#1f242c]/40 border border-[#21262d] rounded-xl p-5 space-y-3">
+                      <h4 className="text-xs font-bold text-[#bc8cff] uppercase tracking-wider flex items-center gap-2">
+                        <Beaker size={14} /> Synthesized Academic Answer
+                      </h4>
+                      <div className="prose max-w-none text-[#c9d1d9] text-sm leading-relaxed font-serif text-justify indent-8">
+                        {queryAnswer.split("\n\n").map((para, idx) => (
+                          <p key={idx} className="mb-3">
+                            {para}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
