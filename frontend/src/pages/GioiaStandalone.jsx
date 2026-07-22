@@ -129,7 +129,8 @@ export default function GioiaStandalone({ cats }) {
         research_question: question,
         fraud_category: category || null,
         max_records: Number(maxRecords) || 500,
-        filter_category: false  // Disable strict category filtering for standalone evaluation
+        filter_category: true,
+        smart_relevance: true
       });
       if (res.data.status === "success") {
         startPolling(res.data.run_id);

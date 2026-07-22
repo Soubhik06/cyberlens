@@ -351,8 +351,8 @@ def extract_json(text):
 
 # STAGE 1: INTAKE AGENT (PURE PYTHON)
 
-def run_intake_agent(research_question, max_records=400, filter_category=True):
-    print("[AGENT 1] Initializing Intake Agent...")
+def run_intake_agent(research_question, max_records=400, filter_category=True, smart_relevance=False):
+    print(f"[AGENT 1] Initializing Intake Agent (filter_category={filter_category}, smart_relevance={smart_relevance})...")
     detected_category = detect_fraud_category(research_question)
     
     excel_path = EXCEL_PATH
@@ -389,6 +389,50 @@ def run_intake_agent(research_question, max_records=400, filter_category=True):
                 return True
         return False
 
+    # --- Relevance Score Helper ---
+    def calculate_relevance_score(row_obj, question_text, detected_cat, text_content):
+        text_lower = text_content.strip().lower()
+        title_lower = str(row_obj.get("Title/Headline", "")).strip().lower()
+        subcat_lower = str(row_obj.get("Fraud Subcategory", "")).strip().lower()
+        cat_lower = str(row_obj.get("Fraud Category", "")).strip().lower()
+        
+        # Clean question words
+        words = [w for w in re.findall(r'[a-z0-9]+', question_text.lower()) if w]
+        stopwords = {
+            'why', 'how', 'what', 'who', 'where', 'when', 'which', 'do', 'does', 'did', 'is', 'are', 'was', 'were',
+            'have', 'has', 'had', 'the', 'a', 'an', 'and', 'or', 'but', 'if', 'of', 'in', 'on', 'at', 'by', 'for',
+            'with', 'about', 'against', 'between', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+            'to', 'from', 'up', 'down', 'in', 'out', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
+            'there', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor',
+            'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't', 'can', 'will', 'just', 'should',
+            'now', 'people', 'fall', 'victim', 'persistent', 'persistence', 'remain', 'remained', 'over', 'last',
+            'decade', 'years', 'exploit', 'perpetrator', 'perpetrators', 'mechanism', 'mechanisms', 'crime', 'crimes',
+            'cybercrime', 'cybercrimes', 'fraud', 'frauds', 'scam', 'scams', 'scammer', 'scammers', 'attack', 'attacks',
+            'analyse', 'analysis', 'qualitative', 'study', 'research'
+        }
+        meaningful = [w for w in words if w not in stopwords and len(w) > 2]
+        if not meaningful:
+            meaningful = [w for w in words if len(w) > 2]
+            
+        score = 0
+        
+        # Big boost if category directly matches detected_cat
+        if row_matches_category(row_obj, detected_cat):
+            score += 10
+            
+        # Add points for matching keywords in fields
+        for kw in meaningful:
+            if kw in subcat_lower:
+                score += 5
+            if kw in cat_lower:
+                score += 3
+            if kw in title_lower:
+                score += 2
+            if kw in text_lower:
+                score += 1
+                
+        return score
+
     records = []
     after_cat = 0
     after_type = 0
@@ -396,6 +440,9 @@ def run_intake_agent(research_question, max_records=400, filter_category=True):
     near_miss_count = 0
     third_party_count = 0
     after_date = 0
+    
+    seen_titles = set()
+    seen_texts = set()
 
     # --- Load Stream A ---
     sheet_a = "stream_a_scraped"
@@ -456,17 +503,38 @@ def run_intake_agent(research_question, max_records=400, filter_category=True):
         if not text_content:
             continue
             
+        title_str = str(row.get("Title/Headline", "")).strip()
+        title_normalized = re.sub(r'\s+', ' ', title_str.strip().lower())
+        if title_normalized and title_normalized in seen_titles:
+            continue
+            
+        text_normalized = re.sub(r'\s+', ' ', text_content.strip().lower())
+        if text_normalized in seen_texts:
+            continue
+            
+        if title_normalized:
+            seen_titles.add(title_normalized)
+        seen_texts.add(text_normalized)
+            
+        # Extract row category from master registry
+        row_category = str(row.get("Fraud Category", "")).strip()
+        if not row_category or row_category.lower() == 'nan':
+            row_category = "General Cybercrime / Cyber Fraud Terms"
+            
         words = text_content.split()
         truncated_text = " ".join(words[:MAX_WORDS_PER_RECORD])
         
+        score = calculate_relevance_score(row, research_question, detected_category, text_content)
         records.append({
             "id": uid,
             "source": "web_scraping",
             "date": parsed_dt.strftime("%Y-%m-%d"),
             "year": parsed_dt.year,
-            "title": str(row.get("Title/Headline", "")).strip(),
+            "title": title_str,
             "narrative_type": normalized_type,
-            "fraud_category": detected_category,
+            "fraud_category": row_category,
+            "cybercrime_category": row_category,
+            "relevance_score": score,
             "text": truncated_text
         })
 
@@ -507,32 +575,68 @@ def run_intake_agent(research_question, max_records=400, filter_category=True):
             if not text_content:
                 continue
                 
+            title_str = str(row.get("Title/Headline", "")).strip()
+            title_normalized = re.sub(r'\s+', ' ', title_str.strip().lower())
+            if title_normalized and title_normalized in seen_titles:
+                continue
+                
+            text_normalized = re.sub(r'\s+', ' ', text_content.strip().lower())
+            if text_normalized in seen_texts:
+                continue
+                
+            if title_normalized:
+                seen_titles.add(title_normalized)
+            seen_texts.add(text_normalized)
+                
+            # Extract row category from master registry
+            row_category = str(row.get("Fraud Category", "")).strip()
+            if not row_category or row_category.lower() == 'nan':
+                row_category = "General Cybercrime / Cyber Fraud Terms"
+                
             words = text_content.split()
             truncated_text = " ".join(words[:MAX_WORDS_PER_RECORD])
             
+            score = calculate_relevance_score(row, research_question, detected_category, text_content)
             records.append({
                 "id": uid,
                 "source": "proquest",
                 "date": parsed_dt.strftime("%Y-%m-%d"),
                 "year": parsed_dt.year,
-                "title": str(row.get("Title/Headline", "")).strip(),
+                "title": title_str,
                 "narrative_type": normalized_type,
-                "fraud_category": detected_category,
+                "fraud_category": row_category,
+                "cybercrime_category": row_category,
+                "relevance_score": score,
                 "text": truncated_text
             })
 
     # --- Smart Sampling ---
-    # Combine all valid narrative types: VICTIM, NEAR-MISS, and THIRD-PARTY
     matching_records = [r for r in records if r['narrative_type'] in ('VICTIM', 'NEAR-MISS', 'THIRD-PARTY')]
-    matching_records.sort(key=lambda x: x['id'])  # sort first for deterministic stability
     
-    # Deterministic sample using a local random generator seeded with the research question
+    # Sort first by ID for stable baseline order
+    matching_records.sort(key=lambda x: x['id'])
+    
+    # Seed the local random generator
     seed_hash = hashlib.sha256(research_question.encode('utf-8')).hexdigest()
     seed_int = int(seed_hash[:8], 16)
     local_rng = random.Random(seed_int)
     
+    if smart_relevance:
+        # Filter for positive scoring records
+        scoring_pool = [r for r in matching_records if r.get("relevance_score", 0) > 0]
+        # Fallback if too few matching records found
+        if len(scoring_pool) >= max_records:
+            matching_records = scoring_pool
+        # Sort by relevance score descending
+        matching_records.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+        
     if len(matching_records) > max_records:
-        final_records = local_rng.sample(matching_records, max_records)
+        if smart_relevance:
+            # Draw from the top pool of relevance
+            top_pool = matching_records[:max_records * 2]
+            final_records = local_rng.sample(top_pool, max_records)
+        else:
+            final_records = local_rng.sample(matching_records, max_records)
     else:
         final_records = matching_records
         
@@ -542,7 +646,7 @@ def run_intake_agent(research_question, max_records=400, filter_category=True):
     csv_filename = "selected_500_chunks.csv"
     try:
         df_final = pd.DataFrame(final_records)
-        cols_to_save = [c for c in ["id", "source", "date", "title", "narrative_type", "text"] if c in df_final.columns]
+        cols_to_save = [c for c in ["id", "source", "date", "title", "narrative_type", "cybercrime_category", "text"] if c in df_final.columns]
         df_final[cols_to_save].to_csv(csv_filename, index=False, encoding="utf-8")
         print(f"[AGENT 1] Successfully exported {len(final_records)} selected chunks to {csv_filename}")
     except Exception as csv_err:
@@ -1267,11 +1371,12 @@ Respond with ONLY this JSON:
 # COMPATIBILITY CLASS FOR WEB APP (FastAPI)
 
 class GioiaPipeline:
-    def __init__(self, research_question, fraud_category=None, run_id=None, max_records=400, filter_category=True):
+    def __init__(self, research_question, fraud_category=None, run_id=None, max_records=400, filter_category=True, smart_relevance=False):
         self.research_question = research_question
         self.fraud_category = fraud_category
         self.max_records = max_records
         self.filter_category = filter_category
+        self.smart_relevance = smart_relevance
         
         if run_id:
             self.run_id = run_id
@@ -1295,6 +1400,8 @@ class GioiaPipeline:
                         self.max_records = int(meta["max_records"])
                     if "filter_category" in meta:
                         self.filter_category = bool(meta["filter_category"])
+                    if "smart_relevance" in meta:
+                        self.smart_relevance = bool(meta["smart_relevance"])
                     return meta
             except:
                 pass
@@ -1304,6 +1411,7 @@ class GioiaPipeline:
             "fraud_category": self.fraud_category,
             "max_records": self.max_records,
             "filter_category": self.filter_category,
+            "smart_relevance": self.smart_relevance,
             "status": "running",
             "current_stage": 1,
             "updated_at": datetime.datetime.now().isoformat(),
@@ -1469,7 +1577,7 @@ class GioiaPipeline:
                 metadata["current_stage"] = 1
                 self.save_metadata(metadata)
                 
-                chunks = await asyncio.to_thread(run_intake_agent, self.research_question, self.max_records, self.filter_category)
+                chunks = await asyncio.to_thread(run_intake_agent, self.research_question, self.max_records, self.filter_category, getattr(self, 'smart_relevance', False))
                 self.save_stage_data(1, chunks)
                 
                 metadata["stats"]["chunks_count"] = len(chunks)
